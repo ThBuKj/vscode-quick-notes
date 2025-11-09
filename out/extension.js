@@ -38,14 +38,12 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
-const os = __importStar(require("os")); // --- NY --- Importerar 'os' för att hitta hemkatalogen
+const os = __importStar(require("os"));
 let notesProvider;
 function activate(context) {
     console.log('Quick Notes extension is now active');
     notesProvider = new NotesViewProvider(context.extensionUri, context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider('quickNotesView', notesProvider));
-    // --- Start på Fil-bevakare ---
-    // Denna bevakar ALLA .md-filer. getNotes() kommer att filtrera.
     const globPattern = '**/*.md';
     console.log(`Startar fil-bevakare för mönstret: ${globPattern}`);
     let fileWatcher = vscode.workspace.createFileSystemWatcher(globPattern);
@@ -62,28 +60,66 @@ function activate(context) {
         notesProvider.refresh();
     });
     context.subscriptions.push(fileWatcher);
-    // Bevakare för när man byter mapp
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
         console.log("Arbetsytan ändrad. Uppdaterar anteckningar.");
         notesProvider.refresh();
     }));
-    // --- Slut på Fil-bevakare ---
-    context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newNote', async () => {
-        const title = await vscode.window.showInputBox({
-            prompt: 'Enter note title',
-            placeHolder: 'My Note'
-        });
-        if (title) {
-            await notesProvider.createNote(title, false);
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('quickNotes.notesFolder')) {
+            console.log("Inställning för 'notesFolder' ändrad. Uppdaterar...");
+            notesProvider.refresh();
         }
     }));
-    context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newTodo', async () => {
+    // --- "Ny anteckning"-logik ---
+    context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newNote', async () => {
+        const notesFolder = notesProvider.getNotesFolder();
+        if (!notesFolder) {
+            return;
+        }
+        const allFolders = notesProvider.getFolders(notesFolder);
+        const quickPickItems = [
+            { label: "$(file-directory) Spara i roten ( / )", folderName: undefined },
+            ...allFolders.map(f => ({ label: `$(folder) ${f}`, folderName: f }))
+        ];
+        const selection = await vscode.window.showQuickPick(quickPickItems, {
+            placeHolder: "Välj en mapp att spara anteckningen i"
+        });
+        if (!selection) {
+            return;
+        }
+        const selectedFolder = selection.folderName;
         const title = await vscode.window.showInputBox({
-            prompt: 'Enter todo list title',
-            placeHolder: 'My Todo List'
+            prompt: 'Ange titel för anteckningen',
+            placeHolder: 'Min Anteckning'
         });
         if (title) {
-            await notesProvider.createNote(title, true);
+            await notesProvider.createNote(title, false, selectedFolder);
+        }
+    }));
+    // --- "Ny todo"-logik ---
+    context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newTodo', async () => {
+        const notesFolder = notesProvider.getNotesFolder();
+        if (!notesFolder) {
+            return;
+        }
+        const allFolders = notesProvider.getFolders(notesFolder);
+        const quickPickItems = [
+            { label: "$(file-directory) Spara i roten ( / )", folderName: undefined },
+            ...allFolders.map(f => ({ label: `$(folder) ${f}`, folderName: f }))
+        ];
+        const selection = await vscode.window.showQuickPick(quickPickItems, {
+            placeHolder: "Välj en mapp att spara todolistan i"
+        });
+        if (!selection) {
+            return;
+        }
+        const selectedFolder = selection.folderName;
+        const title = await vscode.window.showInputBox({
+            prompt: 'Ange titel för todolistan',
+            placeHolder: 'Min Todolista'
+        });
+        if (title) {
+            await notesProvider.createNote(title, true, selectedFolder);
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newFolder', async () => {
@@ -112,6 +148,14 @@ class NotesViewProvider {
             localResourceRoots: [this._extensionUri]
         };
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+        // --- NY/ÄNDRAD --- (HÄR ÄR FIXEN!)
+        // Uppdatera panelen varje gång den blir synlig
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                console.log("Panelen blev synlig, uppdaterar.");
+                this.sendNotesToWebview();
+            }
+        });
         // Handle messages from webview
         webviewView.webview.onDidReceiveMessage(async (data) => {
             switch (data.type) {
@@ -149,20 +193,17 @@ class NotesViewProvider {
     }
     sendNotesToWebview() {
         if (this._view) {
-            // --- NY/ÄNDRAD --- Skickar nu TVÅ mappar som ska läsas
             const notesData = this.getNotes(this.getNotesFolder(), this.getDailyNotesFolder());
             this._view.webview.postMessage({ type: 'notesUpdate', notesData: notesData });
         }
     }
     sendFoldersToWebview() {
         if (this._view) {
-            // Mappar visas bara för den "aktiva" anteckningsmappen
             const folders = this.getFolders(this.getNotesFolder());
             this._view.webview.postMessage({ type: 'foldersUpdate', folders });
         }
     }
     getFolders(notesFolder) {
-        // --- NY/ÄNDRAD --- Tar emot sökvägen som parameter
         if (!notesFolder || !fs.existsSync(notesFolder)) {
             return [];
         }
@@ -170,7 +211,12 @@ class NotesViewProvider {
             const items = fs.readdirSync(notesFolder);
             return items.filter(item => {
                 const itemPath = path.join(notesFolder, item);
-                return fs.statSync(itemPath).isDirectory();
+                try {
+                    return fs.statSync(itemPath).isDirectory();
+                }
+                catch {
+                    return false;
+                }
             });
         }
         catch (e) {
@@ -193,18 +239,15 @@ class NotesViewProvider {
         this.refresh();
     }
     async moveNoteToFolder(filePath, folderName) {
-        // --- NY/ÄNDRAD --- Flyttar filer INUTI den aktuella mappen
         const notesFolder = this.getNotesFolder();
         if (!notesFolder) {
             return;
         }
         const fileName = path.basename(filePath);
         if (folderName === '') {
-            // Move to root
             const newPath = path.join(notesFolder, fileName);
             if (filePath !== newPath) {
                 fs.renameSync(filePath, newPath);
-                // Update metadata
                 const oldMetadata = this.getMetadata(filePath);
                 await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
                 delete oldMetadata.folder;
@@ -212,7 +255,6 @@ class NotesViewProvider {
             }
         }
         else {
-            // Move to folder
             const folderPath = path.join(notesFolder, folderName);
             if (!fs.existsSync(folderPath)) {
                 fs.mkdirSync(folderPath, { recursive: true });
@@ -220,7 +262,6 @@ class NotesViewProvider {
             const newPath = path.join(folderPath, fileName);
             if (filePath !== newPath) {
                 fs.renameSync(filePath, newPath);
-                // Update metadata
                 const oldMetadata = this.getMetadata(filePath);
                 await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
                 oldMetadata.folder = folderName;
@@ -229,7 +270,6 @@ class NotesViewProvider {
         }
     }
     async createFolder(folderName) {
-        // --- NY/ÄNDRAD --- Använder den smarta mapp-hämtaren
         const notesFolder = this.getNotesFolder();
         if (!notesFolder) {
             vscode.window.showErrorMessage('Kan inte skapa mapp: ingen anteckningsmapp hittades.');
@@ -246,9 +286,6 @@ class NotesViewProvider {
             vscode.window.showWarningMessage('Folder already exists!');
         }
     }
-    // --- NY/ÄNDRAD --- 
-    // Den här funktionen är nu "rekursiv" och kan läsa flera mappar.
-    // Den är uppdelad i `getNotes` (som sätter upp) och `readNotesFromFolder` (som gör jobbet).
     getNotes(projectNotesPath, dailyNotesPath) {
         const result = {
             pinned: [],
@@ -256,28 +293,37 @@ class NotesViewProvider {
             root: []
         };
         const allDeadlines = new Set();
-        // Lägg till en speciell "Daily-notes" mapp om den finns
         if (dailyNotesPath && fs.existsSync(dailyNotesPath)) {
             const dailyNotes = this.readNotesFromFolder(dailyNotesPath, allDeadlines);
             if (dailyNotes.root.length > 0 || Object.keys(dailyNotes.folders).length > 0) {
-                result.folders["Dagliga Anteckningar (Global)"] = [...dailyNotes.root, ...Object.values(dailyNotes.folders).flat()];
+                let allDailyNotes = [...dailyNotes.root];
+                Object.values(dailyNotes.folders).forEach(folderContent => {
+                    allDailyNotes.push(...folderContent);
+                });
+                result.folders["Dagliga Anteckningar (Global)"] = allDailyNotes;
             }
         }
-        // Läs in projekt-anteckningar (eller globala ~/Notes om inget projekt är öppet)
-        if (projectNotesPath && fs.existsSync(projectNotesPath) && projectNotesPath !== dailyNotesPath) {
-            const projectNotes = this.readNotesFromFolder(projectNotesPath, allDeadlines);
-            result.pinned.push(...projectNotes.pinned);
-            result.root.push(...projectNotes.root);
-            // Slå ihop mappar
-            for (const folderName in projectNotes.folders) {
-                result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+        if (projectNotesPath && fs.existsSync(projectNotesPath)) {
+            if (projectNotesPath === path.dirname(dailyNotesPath)) {
+                const projectNotes = this.readNotesFromFolder(projectNotesPath, allDeadlines, ['Daily-notes']);
+                result.pinned.push(...projectNotes.pinned);
+                result.root.push(...projectNotes.root);
+                for (const folderName in projectNotes.folders) {
+                    result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+                }
+            }
+            else {
+                const projectNotes = this.readNotesFromFolder(projectNotesPath, allDeadlines);
+                result.pinned.push(...projectNotes.pinned);
+                result.root.push(...projectNotes.root);
+                for (const folderName in projectNotes.folders) {
+                    result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+                }
             }
         }
         return { ...result, deadlines: Array.from(allDeadlines) };
     }
-    // --- NY/ÄNDRAD --- 
-    // Det här är den gamla 'getNotes'-logiken, men gjord till en återanvändbar funktion
-    readNotesFromFolder(notesFolder, allDeadlines) {
+    readNotesFromFolder(notesFolder, allDeadlines, excludeFolders = []) {
         const result = {
             pinned: [],
             folders: {},
@@ -294,7 +340,7 @@ class NotesViewProvider {
         const folders = items.filter(item => {
             const itemPath = path.join(notesFolder, item);
             try {
-                return fs.statSync(itemPath).isDirectory();
+                return fs.statSync(itemPath).isDirectory() && !excludeFolders.includes(item);
             }
             catch {
                 return false;
@@ -408,38 +454,54 @@ class NotesViewProvider {
         });
         return todoItems;
     }
-    // --- NY/ÄNDRAD --- (Smart mapp-hämtare för "normala" anteckningar)
     getNotesFolder() {
+        const config = vscode.workspace.getConfiguration('quickNotes');
+        let storageFolder = config.get('notesFolder');
+        if (storageFolder) {
+            if (storageFolder.startsWith('~/')) {
+                storageFolder = path.join(os.homedir(), storageFolder.substring(2));
+            }
+            if (path.isAbsolute(storageFolder)) {
+                if (!fs.existsSync(storageFolder)) {
+                    fs.mkdirSync(storageFolder, { recursive: true });
+                }
+                return storageFolder;
+            }
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (workspaceFolder) {
+                const projectNotesPath = path.join(workspaceFolder.uri.fsPath, storageFolder);
+                if (!fs.existsSync(projectNotesPath)) {
+                    fs.mkdirSync(projectNotesPath, { recursive: true });
+                }
+                return projectNotesPath;
+            }
+        }
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         let notesRoot;
         if (workspaceFolder) {
-            // Vi är i ett projekt! Spara anteckningar inuti en 'quick-notes'-mapp.
             notesRoot = path.join(workspaceFolder.uri.fsPath, 'quick-notes');
         }
         else {
-            // Vi är *inte* i ett projekt. Spara globalt i ~/Notes.
             notesRoot = path.join(os.homedir(), 'Notes');
         }
-        // Se till att mappen finns
         if (!fs.existsSync(notesRoot)) {
             fs.mkdirSync(notesRoot, { recursive: true });
         }
         return notesRoot;
     }
-    // --- NY/ÄNDRAD --- (En specifik hämtare BARA för dagliga anteckningar)
     getDailyNotesFolder() {
-        // Denna går ALLTID till den globala mappen.
         const dailyRoot = path.join(os.homedir(), 'Notes', 'Daily-notes');
-        // Se till att mappen finns
         if (!fs.existsSync(dailyRoot)) {
             fs.mkdirSync(dailyRoot, { recursive: true });
         }
         return dailyRoot;
     }
     async createNote(title, isTodoList, folderName) {
-        // --- NY/ÄNDRAD --- Använder nu den smarta funktionen
         const notesFolder = this.getNotesFolder();
-        // (Resten av funktionen är densamma som förut, men 'notesFolder' är nu smart)
+        if (!notesFolder) {
+            vscode.window.showErrorMessage('Kan inte skapa anteckning: ingen anteckningsmapp är konfigurerad.');
+            return;
+        }
         if (!fs.existsSync(notesFolder)) {
             fs.mkdirSync(notesFolder, { recursive: true });
         }
@@ -471,16 +533,11 @@ class NotesViewProvider {
         await vscode.window.showTextDocument(doc);
     }
     async createNoteFromDate(dateString) {
-        // --- NY/ÄNDRAD --- (Fix för datum-buggen)
-        const date = new Date(dateString); // Detta är UTC, t.ex. 2025-11-10T23:00Z
-        // Vi subtraherar tidszons-offset för att få tillbaka rätt lokala datum
-        // getTimezoneOffset() är t.ex. -60 för CET. -(-60 * 60000) blir +3600000 ms.
+        const date = new Date(dateString);
         const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
-        const title = `Note ${localDate.getFullYear()}-${String(localDate.getMonth() + 1).padStart(2, '0')}-${String(localDate.getDate()).padStart(2, '0')}`;
-        // --- NY/ÄNDRAD --- (Använder den nya globala funktionen)
+        const title = `Note ${localDate.toISOString().split('T')[0]}`;
         const dailyNotesFolder = this.getDailyNotesFolder();
         const filePath = path.join(dailyNotesFolder, `${title}.md`);
-        // Vi kan inte använda 'createNote' eftersom den använder fel mapp-logik
         if (!fs.existsSync(filePath)) {
             console.log(`Skapar daglig anteckning: ${filePath}`);
             let content = `# ${title}\n\n`;
@@ -501,6 +558,7 @@ class NotesViewProvider {
         if (confirm === 'Yes') {
             fs.unlinkSync(filePath);
             await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
+            this.refresh(); // --- NY/ÄNDRAD --- (Tvinga uppdatering)
         }
     }
     async toggleTodo(filePath, lineNumber) {
@@ -515,10 +573,11 @@ class NotesViewProvider {
                 lines[lineNumber] = line.replace('[x]', '[ ]');
             }
             fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+            this.refresh(); // --- NY/ÄNDRAD --- (Tvinga uppdatering)
         }
     }
     _getHtmlForWebview(webview) {
-        // --- ALL HTML/CSS/JS ÄR OFÖRÄNDRAD FRÅN FÖRRA VERSIONEN ---
+        // --- NY/ÄNDRAD --- (Lade till 'collapseState' för att komma ihåg mapp-lägen)
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
@@ -919,6 +978,9 @@ class NotesViewProvider {
                 let selectedDate = null;
                 let contextMenuTarget = null;
                 let availableFolders = [];
+                
+                // --- NY/ÄNDRAD --- (Minnet för att spara mapp-lägen)
+                let collapseState = {};
 
                 // Request initial notes
                 vscode.postMessage({ type: 'requestNotes' });
@@ -986,7 +1048,11 @@ class NotesViewProvider {
 
                             const icon = document.createElement('span');
                             icon.className = 'folder-icon';
-                            icon.textContent = '📁';
+                            if (folderName === 'Dagliga Anteckningar (Global)') {
+                                icon.textContent = '📅'; 
+                            } else {
+                                icon.textContent = '📁';
+                            }
 
                             const name = document.createElement('span');
                             name.className = 'folder-name';
@@ -998,14 +1064,22 @@ class NotesViewProvider {
 
                             const folderContents = document.createElement('div');
                             folderContents.className = 'folder-contents';
+                            
+                            // --- NY/ÄNDRAD --- (Läser från minnet)
+                            if (collapseState[folderName] === 'collapsed') {
+                                arrow.classList.add('collapsed');
+                                folderContents.classList.add('collapsed');
+                            }
 
                             currentNotes.folders[folderName].forEach(note => {
                                 folderContents.appendChild(createNoteElement(note, note.pinned));
                             });
 
                             folderHeaderDiv.onclick = () => {
-                                arrow.classList.toggle('collapsed');
+                                // --- NY/ÄNDRAD --- (Spara till minnet)
+                                const isCollapsed = arrow.classList.toggle('collapsed');
                                 folderContents.classList.toggle('collapsed');
+                                collapseState[folderName] = isCollapsed ? 'collapsed' : 'expanded';
                             };
 
                             folderDiv.appendChild(folderHeaderDiv);
@@ -1037,6 +1111,8 @@ class NotesViewProvider {
                     const titleDiv = document.createElement('div');
                     titleDiv.className = 'note-title';
                     
+                    let todoListDiv; // --- NY/ÄNDRAD --- (Deklarera här)
+
                     // Add collapse arrow for todo lists
                     if (note.isTodoList && note.todos.length > 0) {
                         const arrow = document.createElement('span');
@@ -1044,11 +1120,12 @@ class NotesViewProvider {
                         arrow.textContent = '▼';
                         arrow.onclick = (e) => {
                             e.stopPropagation();
-                            arrow.classList.toggle('collapsed');
-                            const todoList = noteDiv.querySelector('.todo-list');
-                            if (todoList) {
-                                todoList.classList.toggle('collapsed');
+                            // --- NY/ÄNDRAD --- (Spara till minnet)
+                            const isCollapsed = arrow.classList.toggle('collapsed');
+                            if (todoListDiv) {
+                                todoListDiv.classList.toggle('collapsed');
                             }
+                            collapseState[note.filePath] = isCollapsed ? 'collapsed' : 'expanded';
                         };
                         titleDiv.appendChild(arrow);
                     }
@@ -1112,9 +1189,18 @@ class NotesViewProvider {
                     noteDiv.appendChild(headerDiv);
                     
                     if (note.isTodoList && note.todos.length > 0) {
-                        const todoListDiv = document.createElement('div');
+                        todoListDiv = document.createElement('div'); // --- NY/ÄNDRAD --- (Tilldela här)
                         todoListDiv.className = 'todo-list';
                         
+                        // --- NY/ÄNDRAD --- (Läser från minnet)
+                        if (collapseState[note.filePath] === 'collapsed') {
+                            todoListDiv.classList.add('collapsed');
+                            const arrow = titleDiv.querySelector('.collapse-arrow');
+                            if (arrow) {
+                                arrow.classList.add('collapsed');
+                            }
+                        }
+
                         note.todos.forEach(todo => {
                             const todoDiv = document.createElement('div');
                             todoDiv.className = 'todo-item';

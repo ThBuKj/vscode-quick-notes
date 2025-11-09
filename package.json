@@ -12,7 +12,9 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:quickNotes.newNote"
+    "onCommand:quickNotes.newNote",
+    "onCommand:quickNotes.newTodo",
+    "onCommand:quickNotes.newFolder"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -80,11 +82,32 @@
         }
       ]
     },
+    "configuration": {
+      "title": "Quick Notes",
+      "properties": {
+        "quickNotes.notesFolder": {
+          "type": "string",
+          "default": "",
+          "description": "Rotmapp för anteckningar. Lämna tom för smart standard (använder 'quick-notes' i projektmappen om en sådan finns, annars '~/Notes' globalt)."
+        }
+      }
+    },
     "keybindings": [
       {
         "command": "quickNotes.newNote",
         "key": "alt+n",
         "mac": "cmd+n",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "quickNotes.newFolder",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "quickNotes.newTodo",
+        "mac": "cmd+alt+l",
         "when": "editorTextFocus"
       }
     ]
