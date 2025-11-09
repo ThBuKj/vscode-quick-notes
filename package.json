@@ -3,7 +3,7 @@
   "displayName": "Quick Notes & Todos",
   "description": "Quick and simple notes and todo lists in VS Code with calendar",
   "version": "1.1.0",
-  "publisher": "your-publisher-name",
+  "publisher": "ThBuKj",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -88,7 +88,7 @@
         "quickNotes.notesFolder": {
           "type": "string",
           "default": "",
-          "description": "Rotmapp för anteckningar. Lämna tom för smart standard (använder 'quick-notes' i projektmappen om en sådan finns, annars '~/Notes' globalt)."
+          "description": "Root folder for notes. Leave empty for smart default (uses 'quick-notes' in the project folder if one exists, otherwise '~/Notes' globally)."
         }
       }
     },

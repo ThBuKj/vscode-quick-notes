@@ -164,7 +164,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
-        // --- NY/ÄNDRAD --- (HÄR ÄR FIXEN!)
+        // --- FIXEN FÖR AUTOMATISK UPPDATERING ---
         // Uppdatera panelen varje gång den blir synlig
         webviewView.onDidChangeVisibility(() => {
             if (webviewView.visible) {
@@ -575,6 +575,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
     async createNoteFromDate(dateString: string): Promise<void> {
         const date = new Date(dateString);
+        // --- FIX FÖR DATUM-BUGG ---
         const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
         
         const title = `Note ${localDate.toISOString().split('T')[0]}`;
@@ -609,7 +610,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         if (confirm === 'Yes') {
             fs.unlinkSync(filePath);
             await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
-            this.refresh(); // --- NY/ÄNDRAD --- (Tvinga uppdatering)
+            this.refresh(); // Tvinga uppdatering
         }
     }
 
@@ -626,12 +627,12 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             }
             
             fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
-            this.refresh(); // --- NY/ÄNDRAD --- (Tvinga uppdatering)
+            this.refresh(); // Tvinga uppdatering
         }
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
-        // --- NY/ÄNDRAD --- (Lade till 'collapseState' för att komma ihåg mapp-lägen)
+        // --- NY/ÄNDRAD --- (Lade till 'collapseState'-logik i JavaScript)
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
