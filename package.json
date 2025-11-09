@@ -80,16 +80,6 @@
         }
       ]
     },
-    "configuration": {
-      "title": "Quick Notes",
-      "properties": {
-        "quickNotes.storageFolder": {
-          "type": "string",
-          "default": "",
-          "description": "Folder path where notes will be saved (relative to workspace root or absolute path). Leave empty to use workspace root."
-        }
-      }
-    },
     "keybindings": [
       {
         "command": "quickNotes.newNote",

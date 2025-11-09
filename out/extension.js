@@ -38,12 +38,14 @@ exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const os = __importStar(require("os")); // --- NY --- Importerar 'os' för att hitta hemkatalogen
 let notesProvider;
 function activate(context) {
     console.log('Quick Notes extension is now active');
     notesProvider = new NotesViewProvider(context.extensionUri, context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider('quickNotesView', notesProvider));
     // --- Start på Fil-bevakare ---
+    // Denna bevakar ALLA .md-filer. getNotes() kommer att filtrera.
     const globPattern = '**/*.md';
     console.log(`Startar fil-bevakare för mönstret: ${globPattern}`);
     let fileWatcher = vscode.workspace.createFileSystemWatcher(globPattern);
@@ -60,11 +62,10 @@ function activate(context) {
         notesProvider.refresh();
     });
     context.subscriptions.push(fileWatcher);
-    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('quickNotes.storageFolder')) {
-            console.log("Inställning för anteckningsmapp ändrad. Uppdaterar...");
-            notesProvider.refresh();
-        }
+    // Bevakare för när man byter mapp
+    context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        console.log("Arbetsytan ändrad. Uppdaterar anteckningar.");
+        notesProvider.refresh();
     }));
     // --- Slut på Fil-bevakare ---
     context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newNote', async () => {
@@ -148,18 +149,20 @@ class NotesViewProvider {
     }
     sendNotesToWebview() {
         if (this._view) {
-            const notesData = this.getNotes();
+            // --- NY/ÄNDRAD --- Skickar nu TVÅ mappar som ska läsas
+            const notesData = this.getNotes(this.getNotesFolder(), this.getDailyNotesFolder());
             this._view.webview.postMessage({ type: 'notesUpdate', notesData: notesData });
         }
     }
     sendFoldersToWebview() {
         if (this._view) {
-            const folders = this.getFolders();
+            // Mappar visas bara för den "aktiva" anteckningsmappen
+            const folders = this.getFolders(this.getNotesFolder());
             this._view.webview.postMessage({ type: 'foldersUpdate', folders });
         }
     }
-    getFolders() {
-        const notesFolder = this.getNotesFolder();
+    getFolders(notesFolder) {
+        // --- NY/ÄNDRAD --- Tar emot sökvägen som parameter
         if (!notesFolder || !fs.existsSync(notesFolder)) {
             return [];
         }
@@ -190,6 +193,7 @@ class NotesViewProvider {
         this.refresh();
     }
     async moveNoteToFolder(filePath, folderName) {
+        // --- NY/ÄNDRAD --- Flyttar filer INUTI den aktuella mappen
         const notesFolder = this.getNotesFolder();
         if (!notesFolder) {
             return;
@@ -219,17 +223,16 @@ class NotesViewProvider {
                 // Update metadata
                 const oldMetadata = this.getMetadata(filePath);
                 await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
-                // --- NY/ÄNDRAD --- (DETTA ÄR RADEN SOM VAR TRASIG)
                 oldMetadata.folder = folderName;
                 await this.setMetadata(newPath, oldMetadata);
             }
         }
-        // fil-bevakaren sköter detta
     }
     async createFolder(folderName) {
+        // --- NY/ÄNDRAD --- Använder den smarta mapp-hämtaren
         const notesFolder = this.getNotesFolder();
         if (!notesFolder) {
-            vscode.window.showErrorMessage('No workspace folder open. Please open a folder first.');
+            vscode.window.showErrorMessage('Kan inte skapa mapp: ingen anteckningsmapp hittades.');
             return;
         }
         if (!fs.existsSync(notesFolder)) {
@@ -238,31 +241,55 @@ class NotesViewProvider {
         const folderPath = path.join(notesFolder, folderName);
         if (!fs.existsSync(folderPath)) {
             fs.mkdirSync(folderPath, { recursive: true });
-            // fil-bevakaren sköter detta
         }
         else {
             vscode.window.showWarningMessage('Folder already exists!');
         }
     }
-    getNotes() {
-        const notesFolder = this.getNotesFolder();
-        if (!notesFolder || !fs.existsSync(notesFolder)) {
-            console.warn("Anteckningsmappen finns inte:", notesFolder);
-            return { pinned: [], folders: {}, root: [], deadlines: [] };
-        }
+    // --- NY/ÄNDRAD --- 
+    // Den här funktionen är nu "rekursiv" och kan läsa flera mappar.
+    // Den är uppdelad i `getNotes` (som sätter upp) och `readNotesFromFolder` (som gör jobbet).
+    getNotes(projectNotesPath, dailyNotesPath) {
         const result = {
             pinned: [],
             folders: {},
             root: []
         };
         const allDeadlines = new Set();
+        // Lägg till en speciell "Daily-notes" mapp om den finns
+        if (dailyNotesPath && fs.existsSync(dailyNotesPath)) {
+            const dailyNotes = this.readNotesFromFolder(dailyNotesPath, allDeadlines);
+            if (dailyNotes.root.length > 0 || Object.keys(dailyNotes.folders).length > 0) {
+                result.folders["Dagliga Anteckningar (Global)"] = [...dailyNotes.root, ...Object.values(dailyNotes.folders).flat()];
+            }
+        }
+        // Läs in projekt-anteckningar (eller globala ~/Notes om inget projekt är öppet)
+        if (projectNotesPath && fs.existsSync(projectNotesPath) && projectNotesPath !== dailyNotesPath) {
+            const projectNotes = this.readNotesFromFolder(projectNotesPath, allDeadlines);
+            result.pinned.push(...projectNotes.pinned);
+            result.root.push(...projectNotes.root);
+            // Slå ihop mappar
+            for (const folderName in projectNotes.folders) {
+                result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+            }
+        }
+        return { ...result, deadlines: Array.from(allDeadlines) };
+    }
+    // --- NY/ÄNDRAD --- 
+    // Det här är den gamla 'getNotes'-logiken, men gjord till en återanvändbar funktion
+    readNotesFromFolder(notesFolder, allDeadlines) {
+        const result = {
+            pinned: [],
+            folders: {},
+            root: []
+        };
         let items;
         try {
             items = fs.readdirSync(notesFolder);
         }
         catch (e) {
             console.error(`Kunde inte läsa anteckningsmappen: ${e}`);
-            return { pinned: [], folders: {}, root: [], deadlines: [] };
+            return result;
         }
         const folders = items.filter(item => {
             const itemPath = path.join(notesFolder, item);
@@ -273,7 +300,6 @@ class NotesViewProvider {
                 return false;
             }
         });
-        // Process root notes
         const rootFiles = items.filter(item => {
             const itemPath = path.join(notesFolder, item);
             try {
@@ -308,7 +334,6 @@ class NotesViewProvider {
                 console.error(`Kunde inte läsa fil-data från ${file}: ${e}`);
             }
         });
-        // Process folders
         folders.forEach(folder => {
             const folderPath = path.join(notesFolder, folder);
             let folderFiles = [];
@@ -342,9 +367,7 @@ class NotesViewProvider {
                 }
             }).filter(note => note !== null);
         });
-        const finalDeadlines = Array.from(allDeadlines);
-        console.log('Skickar följande deadlines till WebView:', finalDeadlines);
-        return { ...result, deadlines: finalDeadlines };
+        return result;
     }
     getNoteData(folderPath, file) {
         const filePath = path.join(folderPath, file);
@@ -385,30 +408,38 @@ class NotesViewProvider {
         });
         return todoItems;
     }
+    // --- NY/ÄNDRAD --- (Smart mapp-hämtare för "normala" anteckningar)
     getNotesFolder() {
-        const config = vscode.workspace.getConfiguration('quickNotes');
-        let storageFolder = config.get('storageFolder', '');
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) {
-            vscode.window.showErrorMessage("Du måste ha en mapp öppen för att Quick Notes ska fungera.");
-            return undefined;
-        }
-        if (!storageFolder) {
-            return path.join(workspaceFolder.uri.fsPath, 'quick-notes');
-        }
-        if (path.isAbsolute(storageFolder)) {
-            return storageFolder;
+        let notesRoot;
+        if (workspaceFolder) {
+            // Vi är i ett projekt! Spara anteckningar inuti en 'quick-notes'-mapp.
+            notesRoot = path.join(workspaceFolder.uri.fsPath, 'quick-notes');
         }
         else {
-            return path.join(workspaceFolder.uri.fsPath, storageFolder);
+            // Vi är *inte* i ett projekt. Spara globalt i ~/Notes.
+            notesRoot = path.join(os.homedir(), 'Notes');
         }
+        // Se till att mappen finns
+        if (!fs.existsSync(notesRoot)) {
+            fs.mkdirSync(notesRoot, { recursive: true });
+        }
+        return notesRoot;
+    }
+    // --- NY/ÄNDRAD --- (En specifik hämtare BARA för dagliga anteckningar)
+    getDailyNotesFolder() {
+        // Denna går ALLTID till den globala mappen.
+        const dailyRoot = path.join(os.homedir(), 'Notes', 'Daily-notes');
+        // Se till att mappen finns
+        if (!fs.existsSync(dailyRoot)) {
+            fs.mkdirSync(dailyRoot, { recursive: true });
+        }
+        return dailyRoot;
     }
     async createNote(title, isTodoList, folderName) {
+        // --- NY/ÄNDRAD --- Använder nu den smarta funktionen
         const notesFolder = this.getNotesFolder();
-        if (!notesFolder) {
-            vscode.window.showErrorMessage('Kan inte skapa anteckning: ingen anteckningsmapp är konfigurerad.');
-            return;
-        }
+        // (Resten av funktionen är densamma som förut, men 'notesFolder' är nu smart)
         if (!fs.existsSync(notesFolder)) {
             fs.mkdirSync(notesFolder, { recursive: true });
         }
@@ -440,10 +471,27 @@ class NotesViewProvider {
         await vscode.window.showTextDocument(doc);
     }
     async createNoteFromDate(dateString) {
-        const date = new Date(dateString);
-        const localDate = new Date(date.getTime() + date.getTimezoneOffset() * 60000);
+        // --- NY/ÄNDRAD --- (Fix för datum-buggen)
+        const date = new Date(dateString); // Detta är UTC, t.ex. 2025-11-10T23:00Z
+        // Vi subtraherar tidszons-offset för att få tillbaka rätt lokala datum
+        // getTimezoneOffset() är t.ex. -60 för CET. -(-60 * 60000) blir +3600000 ms.
+        const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
         const title = `Note ${localDate.getFullYear()}-${String(localDate.getMonth() + 1).padStart(2, '0')}-${String(localDate.getDate()).padStart(2, '0')}`;
-        await this.createNote(title, false, 'Dagliga Anteckningar');
+        // --- NY/ÄNDRAD --- (Använder den nya globala funktionen)
+        const dailyNotesFolder = this.getDailyNotesFolder();
+        const filePath = path.join(dailyNotesFolder, `${title}.md`);
+        // Vi kan inte använda 'createNote' eftersom den använder fel mapp-logik
+        if (!fs.existsSync(filePath)) {
+            console.log(`Skapar daglig anteckning: ${filePath}`);
+            let content = `# ${title}\n\n`;
+            content += `Write your notes here...\n`;
+            fs.writeFileSync(filePath, content, 'utf-8');
+        }
+        else {
+            console.log(`Öppnar befintlig daglig anteckning: ${filePath}`);
+        }
+        const doc = await vscode.workspace.openTextDocument(filePath);
+        await vscode.window.showTextDocument(doc);
     }
     openNote(filePath) {
         vscode.window.showTextDocument(vscode.Uri.file(filePath));
@@ -453,7 +501,6 @@ class NotesViewProvider {
         if (confirm === 'Yes') {
             fs.unlinkSync(filePath);
             await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
-            // fil-bevakaren sköter detta
         }
     }
     async toggleTodo(filePath, lineNumber) {
@@ -468,7 +515,6 @@ class NotesViewProvider {
                 lines[lineNumber] = line.replace('[x]', '[ ]');
             }
             fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
-            // fil-bevakaren sköter detta
         }
     }
     _getHtmlForWebview(webview) {
