@@ -1,0 +1,5 @@
+# Mappen med alla nedladdade verktyg
+node_modules
+
+# Mappen med den kompilerade koden
+out/
