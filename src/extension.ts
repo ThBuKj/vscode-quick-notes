@@ -200,7 +200,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         const metadata = this.getMetadata(filePath);
         metadata.pinned = !metadata.pinned;
         await this.setMetadata(filePath, metadata);
-        // Behövs för globalState-ändringar, eftersom fil-bevakaren inte ser detta
         this.refresh();
     }
 
@@ -238,7 +237,10 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                 // Update metadata
                 const oldMetadata = this.getMetadata(filePath);
                 await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
-                oldMetadata.folder = folderName;
+                
+                // --- NY/ÄNDRAD --- (DETTA ÄR RADEN SOM VAR TRASIG)
+                oldMetadata.folder = folderName; 
+                
                 await this.setMetadata(newPath, oldMetadata);
             }
         }
@@ -331,8 +333,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         folders.forEach(folder => {
             const folderPath = path.join(notesFolder, folder);
             
-            // --- NY/ÄNDRAD --- (Detta är rad 337)
-            // Vi ger den en TYP (string[]) och ett DEFAULTVÄRDE ([])
             let folderFiles: string[] = []; 
             
             try {
@@ -347,10 +347,8 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                     });
             } catch (e) {
                 console.error(`Kunde inte läsa mappen ${folderPath}: ${e}`);
-                // Vi behöver inte göra 'folderFiles = []' eftersom det redan är default
             }
 
-            // Nu kommer rad 353 (ungefär) att fungera, eftersom folderFiles alltid är en array.
             result.folders[folder] = folderFiles.map(file => {
                 try {
                     const noteData = this.getNoteData(folderPath, file);
@@ -377,7 +375,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
         const todos = isTodoList ? this.getTodoItems(filePath) : [];
 
-        // Mer förlåtande Regex: \s* = noll eller flera mellanslag, i = skiftlägesokänslig
         const deadlineRegex = /#DEADLINE\s*\(\s*(\d{4}-\d{2}-\d{2})\s*\)/gi;
         const deadlines: string[] = [];
         let match;
@@ -429,14 +426,12 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         }
 
         if (!storageFolder) {
-            // Sätt en default-mapp om ingen är angiven
             return path.join(workspaceFolder.uri.fsPath, 'quick-notes');
         }
 
         if (path.isAbsolute(storageFolder)) {
             return storageFolder;
         } else {
-            // Hantera relativa sökvägar från arbetsytans rot
             return path.join(workspaceFolder.uri.fsPath, storageFolder);
         }
     }
@@ -453,39 +448,42 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         }
 
         const targetFolder = folderName ? path.join(notesFolder, folderName) : notesFolder;
-        if (!fs.existsSync(targetFolder)) {
+        if (folderName && !fs.existsSync(targetFolder)) {
             fs.mkdirSync(targetFolder, { recursive: true });
         }
 
         const fileName = `${title}.md`;
         const filePath = path.join(targetFolder, fileName);
 
-        let content = `# ${title}\n\n`;
-        if (isTodoList) {
-            content += `- [ ] First item\n- [ ] Second item\n- [ ] Third item\n`;
+        if (!fs.existsSync(filePath)) {
+            console.log(`Filen ${fileName} finns inte. Skapar den i ${targetFolder}.`);
+            let content = `# ${title}\n\n`;
+            if (isTodoList) {
+                content += `- [ ] First item\n- [ ] Second item\n- [ ] Third item\n`;
+            } else {
+                content += `Write your notes here...\n`;
+            }
+
+            fs.writeFileSync(filePath, content, 'utf-8');
+            
+            if (folderName) {
+                const metadata: NoteMetadata = { folder: folderName };
+                await this.setMetadata(filePath, metadata);
+            }
         } else {
-            content += `Write your notes here...\n`;
-        }
-
-        fs.writeFileSync(filePath, content, 'utf-8');
-        
-        if (folderName) {
-            const metadata: NoteMetadata = { folder: folderName };
-            await this.setMetadata(filePath, metadata);
+            console.log(`Filen ${fileName} finns redan. Öppnar den istället för att skriva över.`);
         }
         
-        // fil-bevakaren sköter detta
-
         const doc = await vscode.workspace.openTextDocument(filePath);
         await vscode.window.showTextDocument(doc);
     }
 
     async createNoteFromDate(dateString: string): Promise<void> {
         const date = new Date(dateString);
-        // Tvinga datumet att vara "lokalt" istället för UTC
         const localDate = new Date(date.getTime() + date.getTimezoneOffset() * 60000);
         const title = `Note ${localDate.getFullYear()}-${String(localDate.getMonth() + 1).padStart(2, '0')}-${String(localDate.getDate()).padStart(2, '0')}`;
-        await this.createNote(title, false);
+        
+        await this.createNote(title, false, 'Dagliga Anteckningar');
     }
 
     private openNote(filePath: string) {
@@ -524,6 +522,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
+        // --- ALL HTML/CSS/JS ÄR OFÖRÄNDRAD FRÅN FÖRRA VERSIONEN ---
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
@@ -1262,12 +1261,10 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                         dayDiv.textContent = day;
                         
                         // --- TIDSZONS-FIX ---
-                        // Bygg datumsträngen manuellt för att undvika UTC-konvertering
                         const monthString = String(month + 1).padStart(2, '0');
                         const dayString = String(day).padStart(2, '0');
                         const dateString = \`\${year}-\${monthString}-\${dayString}\`;
 
-                        // Kolla om detta datum finns i vår deadline-lista
                         if (deadlineDates.includes(dateString)) {
                             dayDiv.classList.add('deadline');
                         }
