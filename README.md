@@ -65,6 +65,5 @@ Om du vill hjälpa till att utveckla, köra från källkod eller bara se hur det
    - Tryck på `F5` för att starta "Extension Development Host" (ett nytt VS Code-fönster).
    - Tillägget kommer nu att vara aktivt i det nya fönstret.
 
----
 
-**Lycka till med ditt projekt!** 🚀
+
