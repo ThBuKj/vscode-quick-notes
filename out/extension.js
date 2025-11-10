@@ -148,7 +148,7 @@ class NotesViewProvider {
             localResourceRoots: [this._extensionUri]
         };
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
-        // --- NY/ÄNDRAD --- (HÄR ÄR FIXEN!)
+        // --- FIXEN FÖR AUTOMATISK UPPDATERING ---
         // Uppdatera panelen varje gång den blir synlig
         webviewView.onDidChangeVisibility(() => {
             if (webviewView.visible) {
@@ -534,6 +534,7 @@ class NotesViewProvider {
     }
     async createNoteFromDate(dateString) {
         const date = new Date(dateString);
+        // --- FIX FÖR DATUM-BUGG ---
         const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
         const title = `Note ${localDate.toISOString().split('T')[0]}`;
         const dailyNotesFolder = this.getDailyNotesFolder();
@@ -558,7 +559,7 @@ class NotesViewProvider {
         if (confirm === 'Yes') {
             fs.unlinkSync(filePath);
             await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
-            this.refresh(); // --- NY/ÄNDRAD --- (Tvinga uppdatering)
+            this.refresh(); // Tvinga uppdatering
         }
     }
     async toggleTodo(filePath, lineNumber) {
@@ -573,11 +574,11 @@ class NotesViewProvider {
                 lines[lineNumber] = line.replace('[x]', '[ ]');
             }
             fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
-            this.refresh(); // --- NY/ÄNDRAD --- (Tvinga uppdatering)
+            this.refresh(); // Tvinga uppdatering
         }
     }
     _getHtmlForWebview(webview) {
-        // --- NY/ÄNDRAD --- (Lade till 'collapseState' för att komma ihåg mapp-lägen)
+        // --- NY/ÄNDRAD --- (Lade till 'collapseState'-logik i JavaScript)
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
