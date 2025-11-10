@@ -56,8 +56,7 @@
       },
       {
         "command": "quickNotes.newTodo",
-        "title": "Quick Notes: New Todo List",
-        "icon": "$(checklist)"
+        "title": "Quick Notes: New TODO list",  "icon": "$(checklist)"
       },
       {
         "command": "quickNotes.refresh",
@@ -108,13 +107,16 @@
           "default": {
             "DEADLINE": {
               "color": "#FF0000",
-              "appliesToCalendar": true
+              "appliesToCalendar": true,
+              "visibleInSidebar": false
             },
             "TODO": {
-              "color": "#FFD700"
+              "color": "#FFD700",
+              "visibleInSidebar": true
             },
             "BUG": {
-              "color": "#8B0000"
+              "color": "#8B0000",
+              "visibleInSidebar": true
             }
           },
           "additionalProperties": {
@@ -128,6 +130,11 @@
                 "type": "boolean",
                 "description": "If true, this tag's date will mark the calendar. Only works if tag is followed by (YYYY-MM-DD).",
                 "default": false
+              },
+              "visibleInSidebar": {
+                "type": "boolean",
+                "description": "If true, this tag will be visible in the note list in the sidebar. Default is true.",
+                "default": true
               }
             }
           }
