@@ -1,3 +1,13 @@
+# Disclaimer
+
+Är första gången jag gör något liknande och koden är kaos, felsökt med AI och inte haft full koll på alla rader kod. 
+Tanken är att lägga in saker efter behov, för att sen komma med en större uppdatering där jag har renskrivit koden och tagit bort alla upprepningar 😐.
+
+## Känt problem
+
+Programmet startar direkt med VS, vilket gör att det går lite segt i början. Kommer att fixa det i framtiden, så att programmet startar upp när du vill använda det istället.
+
+
 # Quick Notes & Todos
 
 Ett enkelt och snabbt anteckningstillägg för VS Code, direkt i ditt sidofält. Detta tillägg är perfekt för att snabbt skriva ner anteckningar, hantera TODO-listor och hålla koll på deadlines med en inbyggd kalender.
