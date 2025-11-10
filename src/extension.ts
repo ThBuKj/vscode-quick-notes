@@ -108,7 +108,6 @@ export function activate(context: vscode.ExtensionContext) {
             const notesFolder = await notesProvider.getProjectNotesFolder(); 
             const globalFolder = notesProvider.getGlobalNotesFolder(); 
 
-            // FIXAT: Hämta undermappar från BÅDA källorna
             const allProjectFolders = await notesProvider.getFolders(notesFolder);
             const allGlobalFolders = await notesProvider.getFolders(globalFolder);
 
@@ -133,7 +132,6 @@ export function activate(context: vscode.ExtensionContext) {
                 quickPickItems.splice(quickPickItems.length - 1); // Ta bort projektmapparna
             }
 
-
             const selection = await vscode.window.showQuickPick(quickPickItems, {
                 placeHolder: "Välj en mapp att spara anteckningen i (Global eller Projekt)"
             });
@@ -157,7 +155,6 @@ export function activate(context: vscode.ExtensionContext) {
             const notesFolder = await notesProvider.getProjectNotesFolder(); 
             const globalFolder = notesProvider.getGlobalNotesFolder(); 
 
-            // FIXAT: Hämta undermappar från BÅDA källorna
             const allProjectFolders = await notesProvider.getFolders(notesFolder);
             const allGlobalFolders = await notesProvider.getFolders(globalFolder);
 
@@ -201,7 +198,6 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        // FIXAT: Uppdaterat kommandot för att hantera Global vs Projekt
         vscode.commands.registerCommand('quickNotes.newFolder', async () => {
             
             const projectFolder = await notesProvider.getProjectNotesFolder();
@@ -209,18 +205,15 @@ export function activate(context: vscode.ExtensionContext) {
 
             const quickPickItems: (vscode.QuickPickItem & { basePath: string })[] = [];
             
-            // Du kan alltid skapa en global mapp
             quickPickItems.push({ label: `$(globe) Skapa i Global Notes`, basePath: globalFolder });
             
-            // Du kan bara skapa en projektmapp om ett projekt är öppet
             if (projectFolder) {
                 quickPickItems.push({ label: `$(file-directory) Skapa i Projektmapp`, basePath: projectFolder });
             }
 
-            let basePath = globalFolder; // Standard är Global om inget projekt är öppet
+            let basePath = globalFolder; 
             
             if (projectFolder) {
-                // Fråga bara om båda alternativen finns
                 const selection = await vscode.window.showQuickPick(quickPickItems, {
                     placeHolder: "Var vill du skapa den nya mappen?"
                 });
@@ -234,7 +227,6 @@ export function activate(context: vscode.ExtensionContext) {
             });
             
             if (folderName) {
-                // Anropa createFolder med den valda bassökvägen
                 await notesProvider.createFolder(folderName, basePath); 
             }
         })
@@ -531,8 +523,13 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                 }
             });
 
-            if(globalNotes.root.length > 0) {
-                result.folders[GLOBAL_NOTES_DISPLAY_NAME] = globalNotes.root;
+            // FIXAT: Ser till att "Global Notes"-mappen visas även om den är tom
+            result.folders[GLOBAL_NOTES_DISPLAY_NAME] = globalNotes.root;
+            
+            // Lägg till eventuella undermappar från Global Notes
+            for (const folderName in globalNotes.folders) {
+                const fullFolderName = `${GLOBAL_NOTES_DISPLAY_NAME}/${folderName}`;
+                result.folders[fullFolderName] = globalNotes.folders[folderName];
             }
         }
 
