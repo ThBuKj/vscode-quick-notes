@@ -36,47 +36,56 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
-const fs = __importStar(require("fs"));
+const fs = __importStar(require("fs")); // Vi behåller 'fs' för 'existsSync'
+const fsPromises = __importStar(require("fs/promises")); // --- NY --- Importerar Asynkrona versioner
 const path = __importStar(require("path"));
 const os = __importStar(require("os"));
 let notesProvider;
+const DEBUG = false; // Sätt till true för att se loggar i konsolen
+function log(message, ...args) {
+    if (DEBUG) {
+        console.log(`[QuickNotes] ${message}`, ...args);
+    }
+}
+// --- FIX --- Konstanter för att undvika sträng-buggar
+const DAILY_NOTES_FOLDER_NAME = "Daily-notes";
+const DAILY_NOTES_DISPLAY_NAME = "Daily Notes (Global)";
 function activate(context) {
-    console.log('Quick Notes extension is now active');
+    log('Quick Notes extension is now active');
     notesProvider = new NotesViewProvider(context.extensionUri, context);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider('quickNotesView', notesProvider));
     const globPattern = '**/*.md';
-    console.log(`Startar fil-bevakare för mönstret: ${globPattern}`);
+    log(`Starting file watcher for pattern: ${globPattern}`);
     let fileWatcher = vscode.workspace.createFileSystemWatcher(globPattern);
     fileWatcher.onDidCreate(() => {
-        console.log('Fil-bevakare: .md-fil skapad. Uppdaterar...');
+        log('File watcher: .md file created. Updating...');
         notesProvider.refresh();
     });
     fileWatcher.onDidChange(() => {
-        console.log('Fil-bevakare: .md-fil ändrad. Uppdaterar...');
+        log('File watcher: .md file changed. Updating...');
         notesProvider.refresh();
     });
     fileWatcher.onDidDelete(() => {
-        console.log('Fil-bevakare: .md-fil raderad. Uppdaterar...');
+        log('File watcher: .md file deleted. Updating...');
         notesProvider.refresh();
     });
     context.subscriptions.push(fileWatcher);
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        console.log("Arbetsytan ändrad. Uppdaterar anteckningar.");
+        log("Workspace changed. Updating notes.");
         notesProvider.refresh();
     }));
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('quickNotes.notesFolder')) {
-            console.log("Inställning för 'notesFolder' ändrad. Uppdaterar...");
+            log("Setting 'notesFolder' changed. Updating...");
             notesProvider.refresh();
         }
     }));
-    // --- "Ny anteckning"-logik ---
     context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newNote', async () => {
-        const notesFolder = notesProvider.getNotesFolder();
+        const notesFolder = await notesProvider.getNotesFolder(); // --- FIX --- (await)
         if (!notesFolder) {
             return;
         }
-        const allFolders = notesProvider.getFolders(notesFolder);
+        const allFolders = await notesProvider.getFolders(notesFolder);
         const quickPickItems = [
             { label: "$(file-directory) Spara i roten ( / )", folderName: undefined },
             ...allFolders.map(f => ({ label: `$(folder) ${f}`, folderName: f }))
@@ -96,13 +105,12 @@ function activate(context) {
             await notesProvider.createNote(title, false, selectedFolder);
         }
     }));
-    // --- "Ny todo"-logik ---
     context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newTodo', async () => {
-        const notesFolder = notesProvider.getNotesFolder();
+        const notesFolder = await notesProvider.getNotesFolder(); // --- FIX --- (await)
         if (!notesFolder) {
             return;
         }
-        const allFolders = notesProvider.getFolders(notesFolder);
+        const allFolders = await notesProvider.getFolders(notesFolder);
         const quickPickItems = [
             { label: "$(file-directory) Spara i roten ( / )", folderName: undefined },
             ...allFolders.map(f => ({ label: `$(folder) ${f}`, folderName: f }))
@@ -132,7 +140,7 @@ function activate(context) {
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand('quickNotes.refresh', () => {
-        console.log("Manuell uppdatering anropad.");
+        log("Manual refresh called.");
         notesProvider.refresh();
     }));
 }
@@ -148,15 +156,13 @@ class NotesViewProvider {
             localResourceRoots: [this._extensionUri]
         };
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
-        // --- FIXEN FÖR AUTOMATISK UPPDATERING ---
-        // Uppdatera panelen varje gång den blir synlig
+        // --- FIX --- (Korrekt kommando för att uppdatera när panelen syns)
         webviewView.onDidChangeVisibility(() => {
             if (webviewView.visible) {
-                console.log("Panelen blev synlig, uppdaterar.");
+                log("Panel became visible, updating.");
                 this.sendNotesToWebview();
             }
         });
-        // Handle messages from webview
         webviewView.webview.onDidReceiveMessage(async (data) => {
             switch (data.type) {
                 case 'openNote':
@@ -185,42 +191,48 @@ class NotesViewProvider {
                     break;
             }
         });
-        // Send initial notes
         this.sendNotesToWebview();
     }
-    refresh() {
-        this.sendNotesToWebview();
+    async refresh() {
+        await this.sendNotesToWebview();
     }
-    sendNotesToWebview() {
+    async sendNotesToWebview() {
         if (this._view) {
-            const notesData = this.getNotes(this.getNotesFolder(), this.getDailyNotesFolder());
+            const notesData = await this.getNotes(await this.getNotesFolder(), await this.getDailyNotesFolder());
             this._view.webview.postMessage({ type: 'notesUpdate', notesData: notesData });
         }
     }
-    sendFoldersToWebview() {
+    async sendFoldersToWebview() {
         if (this._view) {
-            const folders = this.getFolders(this.getNotesFolder());
+            const folders = await this.getFolders(await this.getNotesFolder());
             this._view.webview.postMessage({ type: 'foldersUpdate', folders });
         }
     }
-    getFolders(notesFolder) {
-        if (!notesFolder || !fs.existsSync(notesFolder)) {
+    async getFolders(notesFolder) {
+        if (!notesFolder) {
             return [];
         }
         try {
-            const items = fs.readdirSync(notesFolder);
-            return items.filter(item => {
+            // Kontrollera om mappen finns FÖRST
+            await fsPromises.access(notesFolder);
+            const items = await fsPromises.readdir(notesFolder);
+            const folders = [];
+            for (const item of items) {
                 const itemPath = path.join(notesFolder, item);
                 try {
-                    return fs.statSync(itemPath).isDirectory();
+                    const stats = await fsPromises.stat(itemPath);
+                    if (stats.isDirectory()) {
+                        folders.push(item);
+                    }
                 }
                 catch {
-                    return false;
+                    continue;
                 }
-            });
+            }
+            return folders;
         }
         catch (e) {
-            console.error(`Kunde inte läsa mappar från ${notesFolder}: ${e}`);
+            log(`Could not read folders from ${notesFolder}: ${e}`);
             return [];
         }
     }
@@ -239,54 +251,68 @@ class NotesViewProvider {
         this.refresh();
     }
     async moveNoteToFolder(filePath, folderName) {
-        const notesFolder = this.getNotesFolder();
-        if (!notesFolder) {
-            return;
+        try {
+            const notesFolder = await this.getNotesFolder();
+            if (!notesFolder) {
+                vscode.window.showErrorMessage('Cannot move note: no notes folder found.');
+                return;
+            }
+            const fileName = path.basename(filePath);
+            if (folderName === '') {
+                const newPath = path.join(notesFolder, fileName);
+                if (filePath !== newPath) {
+                    await fsPromises.rename(filePath, newPath);
+                    const oldMetadata = this.getMetadata(filePath);
+                    await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
+                    delete oldMetadata.folder;
+                    await this.setMetadata(newPath, oldMetadata);
+                }
+            }
+            else {
+                const folderPath = path.join(notesFolder, folderName);
+                if (!fs.existsSync(folderPath)) {
+                    await fsPromises.mkdir(folderPath, { recursive: true });
+                }
+                const newPath = path.join(folderPath, fileName);
+                if (filePath !== newPath) {
+                    await fsPromises.rename(filePath, newPath);
+                    const oldMetadata = this.getMetadata(filePath);
+                    await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
+                    oldMetadata.folder = folderName;
+                    await this.setMetadata(newPath, oldMetadata);
+                }
+            }
+            this.refresh();
         }
-        const fileName = path.basename(filePath);
-        if (folderName === '') {
-            const newPath = path.join(notesFolder, fileName);
-            if (filePath !== newPath) {
-                fs.renameSync(filePath, newPath);
-                const oldMetadata = this.getMetadata(filePath);
-                await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
-                delete oldMetadata.folder;
-                await this.setMetadata(newPath, oldMetadata);
-            }
-        }
-        else {
-            const folderPath = path.join(notesFolder, folderName);
-            if (!fs.existsSync(folderPath)) {
-                fs.mkdirSync(folderPath, { recursive: true });
-            }
-            const newPath = path.join(folderPath, fileName);
-            if (filePath !== newPath) {
-                fs.renameSync(filePath, newPath);
-                const oldMetadata = this.getMetadata(filePath);
-                await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
-                oldMetadata.folder = folderName;
-                await this.setMetadata(newPath, oldMetadata);
-            }
+        catch (error) {
+            vscode.window.showErrorMessage(`Failed to move note: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            log('Move note error:', error);
         }
     }
     async createFolder(folderName) {
-        const notesFolder = this.getNotesFolder();
-        if (!notesFolder) {
-            vscode.window.showErrorMessage('Kan inte skapa mapp: ingen anteckningsmapp hittades.');
-            return;
+        try {
+            const notesFolder = await this.getNotesFolder();
+            if (!notesFolder) {
+                vscode.window.showErrorMessage('Cannot create folder: no notes folder found.');
+                return;
+            }
+            if (!fs.existsSync(notesFolder)) {
+                await fsPromises.mkdir(notesFolder, { recursive: true });
+            }
+            const folderPath = path.join(notesFolder, folderName);
+            if (!fs.existsSync(folderPath)) {
+                await fsPromises.mkdir(folderPath, { recursive: true });
+            }
+            else {
+                vscode.window.showWarningMessage('Folder already exists!');
+            }
         }
-        if (!fs.existsSync(notesFolder)) {
-            fs.mkdirSync(notesFolder, { recursive: true });
-        }
-        const folderPath = path.join(notesFolder, folderName);
-        if (!fs.existsSync(folderPath)) {
-            fs.mkdirSync(folderPath, { recursive: true });
-        }
-        else {
-            vscode.window.showWarningMessage('Folder already exists!');
+        catch (error) {
+            vscode.window.showErrorMessage(`Failed to create folder: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            log('Create folder error:', error);
         }
     }
-    getNotes(projectNotesPath, dailyNotesPath) {
+    async getNotes(projectNotesPath, dailyNotesPath) {
         const result = {
             pinned: [],
             folders: {},
@@ -294,18 +320,18 @@ class NotesViewProvider {
         };
         const allDeadlines = new Set();
         if (dailyNotesPath && fs.existsSync(dailyNotesPath)) {
-            const dailyNotes = this.readNotesFromFolder(dailyNotesPath, allDeadlines);
+            const dailyNotes = await this.readNotesFromFolder(dailyNotesPath, allDeadlines);
             if (dailyNotes.root.length > 0 || Object.keys(dailyNotes.folders).length > 0) {
                 let allDailyNotes = [...dailyNotes.root];
                 Object.values(dailyNotes.folders).forEach(folderContent => {
                     allDailyNotes.push(...folderContent);
                 });
-                result.folders["Dagliga Anteckningar (Global)"] = allDailyNotes;
+                result.folders[DAILY_NOTES_DISPLAY_NAME] = allDailyNotes;
             }
         }
         if (projectNotesPath && fs.existsSync(projectNotesPath)) {
-            if (projectNotesPath === path.dirname(dailyNotesPath)) {
-                const projectNotes = this.readNotesFromFolder(projectNotesPath, allDeadlines, ['Daily-notes']);
+            if (dailyNotesPath && projectNotesPath === path.dirname(dailyNotesPath)) {
+                const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines, [DAILY_NOTES_FOLDER_NAME]);
                 result.pinned.push(...projectNotes.pinned);
                 result.root.push(...projectNotes.root);
                 for (const folderName in projectNotes.folders) {
@@ -313,7 +339,7 @@ class NotesViewProvider {
                 }
             }
             else {
-                const projectNotes = this.readNotesFromFolder(projectNotesPath, allDeadlines);
+                const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines);
                 result.pinned.push(...projectNotes.pinned);
                 result.root.push(...projectNotes.root);
                 for (const folderName in projectNotes.folders) {
@@ -321,9 +347,10 @@ class NotesViewProvider {
                 }
             }
         }
+        log('Sending deadlines to WebView:', Array.from(allDeadlines));
         return { ...result, deadlines: Array.from(allDeadlines) };
     }
-    readNotesFromFolder(notesFolder, allDeadlines, excludeFolders = []) {
+    async readNotesFromFolder(notesFolder, allDeadlines, excludeFolders = []) {
         const result = {
             pinned: [],
             folders: {},
@@ -331,42 +358,42 @@ class NotesViewProvider {
         };
         let items;
         try {
-            items = fs.readdirSync(notesFolder);
+            items = await fsPromises.readdir(notesFolder);
         }
         catch (e) {
-            console.error(`Kunde inte läsa anteckningsmappen: ${e}`);
+            log(`Could not read notes folder: ${e}`);
             return result;
         }
-        const folders = items.filter(item => {
+        const folders = [];
+        const rootFiles = [];
+        for (const item of items) {
             const itemPath = path.join(notesFolder, item);
             try {
-                return fs.statSync(itemPath).isDirectory() && !excludeFolders.includes(item);
+                const stats = await fsPromises.stat(itemPath);
+                if (stats.isDirectory() && !excludeFolders.includes(item)) {
+                    folders.push(item);
+                }
+                else if (stats.isFile() && item.endsWith('.md')) {
+                    rootFiles.push(item);
+                }
             }
             catch {
-                return false;
+                continue;
             }
-        });
-        const rootFiles = items.filter(item => {
-            const itemPath = path.join(notesFolder, item);
+        }
+        const rootFilesWithStats = await Promise.all(rootFiles.map(async (file) => {
             try {
-                return fs.statSync(itemPath).isFile() && item.endsWith('.md');
+                const stats = await fsPromises.stat(path.join(notesFolder, file));
+                return { file, mtime: stats.mtime.getTime() };
             }
             catch {
-                return false;
+                return { file, mtime: 0 };
             }
-        }).sort((a, b) => {
+        }));
+        rootFilesWithStats.sort((a, b) => b.mtime - a.mtime);
+        for (const { file } of rootFilesWithStats) {
             try {
-                const statsA = fs.statSync(path.join(notesFolder, a));
-                const statsB = fs.statSync(path.join(notesFolder, b));
-                return statsB.mtime.getTime() - statsA.mtime.getTime();
-            }
-            catch {
-                return 0;
-            }
-        });
-        rootFiles.forEach(file => {
-            try {
-                const noteData = this.getNoteData(notesFolder, file);
+                const noteData = await this.getNoteData(notesFolder, file);
                 noteData.deadlines.forEach((d) => allDeadlines.add(d));
                 const metadata = this.getMetadata(noteData.filePath);
                 if (metadata.pinned) {
@@ -377,55 +404,57 @@ class NotesViewProvider {
                 }
             }
             catch (e) {
-                console.error(`Kunde inte läsa fil-data från ${file}: ${e}`);
+                log(`Could not read file data from ${file}: ${e}`);
             }
-        });
-        folders.forEach(folder => {
+        }
+        for (const folder of folders) {
             const folderPath = path.join(notesFolder, folder);
             let folderFiles = [];
             try {
-                folderFiles = fs.readdirSync(folderPath)
-                    .filter(file => file.endsWith('.md'))
-                    .sort((a, b) => {
+                const allFiles = await fsPromises.readdir(folderPath);
+                folderFiles = allFiles.filter(file => file.endsWith('.md'));
+                const filesWithStats = await Promise.all(folderFiles.map(async (file) => {
                     try {
-                        const statsA = fs.statSync(path.join(folderPath, a));
-                        const statsB = fs.statSync(path.join(folderPath, b));
-                        return statsB.mtime.getTime() - statsA.mtime.getTime();
+                        const stats = await fsPromises.stat(path.join(folderPath, file));
+                        return { file, mtime: stats.mtime.getTime() };
                     }
                     catch {
-                        return 0;
+                        return { file, mtime: 0 };
                     }
-                });
+                }));
+                filesWithStats.sort((a, b) => b.mtime - a.mtime);
+                folderFiles = filesWithStats.map(f => f.file);
             }
             catch (e) {
-                console.error(`Kunde inte läsa mappen ${folderPath}: ${e}`);
+                log(`Could not read folder ${folderPath}: ${e}`);
             }
-            result.folders[folder] = folderFiles.map(file => {
+            const folderNotes = [];
+            for (const file of folderFiles) {
                 try {
-                    const noteData = this.getNoteData(folderPath, file);
+                    const noteData = await this.getNoteData(folderPath, file);
                     noteData.deadlines.forEach((d) => allDeadlines.add(d));
                     const metadata = this.getMetadata(noteData.filePath);
-                    return { ...noteData, folder: folder, pinned: metadata.pinned || false };
+                    folderNotes.push({ ...noteData, folder: folder, pinned: metadata.pinned || false });
                 }
                 catch (e) {
-                    console.error(`Kunde inte läsa fil-data från ${file} i mappen ${folder}: ${e}`);
-                    return null;
+                    log(`Could not read file data from ${file} in folder ${folder}: ${e}`);
                 }
-            }).filter(note => note !== null);
-        });
+            }
+            result.folders[folder] = folderNotes;
+        }
         return result;
     }
-    getNoteData(folderPath, file) {
+    async getNoteData(folderPath, file) {
         const filePath = path.join(folderPath, file);
-        const content = fs.readFileSync(filePath, 'utf-8');
+        const content = await fsPromises.readFile(filePath, 'utf-8');
         const isTodoList = content.includes('- [ ]') || content.includes('- [x]');
         const fileName = path.basename(file, '.md');
-        const todos = isTodoList ? this.getTodoItems(filePath) : [];
+        const todos = isTodoList ? await this.getTodoItems(filePath) : [];
         const deadlineRegex = /#DEADLINE\s*\(\s*(\d{4}-\d{2}-\d{2})\s*\)/gi;
         const deadlines = [];
         let match;
         while ((match = deadlineRegex.exec(content)) !== null) {
-            console.log(`Hittade deadline: ${match[1]} i filen ${file}`);
+            log(`Found deadline: ${match[1]} in file ${file}`);
             deadlines.push(match[1]);
         }
         return {
@@ -436,8 +465,8 @@ class NotesViewProvider {
             deadlines: deadlines
         };
     }
-    getTodoItems(filePath) {
-        const content = fs.readFileSync(filePath, 'utf-8');
+    async getTodoItems(filePath) {
+        const content = await fsPromises.readFile(filePath, 'utf-8');
         const lines = content.split('\n');
         const todoItems = [];
         lines.forEach((line, index) => {
@@ -454,7 +483,7 @@ class NotesViewProvider {
         });
         return todoItems;
     }
-    getNotesFolder() {
+    async getNotesFolder() {
         const config = vscode.workspace.getConfiguration('quickNotes');
         let storageFolder = config.get('notesFolder');
         if (storageFolder) {
@@ -462,16 +491,22 @@ class NotesViewProvider {
                 storageFolder = path.join(os.homedir(), storageFolder.substring(2));
             }
             if (path.isAbsolute(storageFolder)) {
-                if (!fs.existsSync(storageFolder)) {
-                    fs.mkdirSync(storageFolder, { recursive: true });
+                try {
+                    await fsPromises.mkdir(storageFolder, { recursive: true });
+                }
+                catch (error) {
+                    log(`Could not create notes folder: ${error}`);
                 }
                 return storageFolder;
             }
             const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
             if (workspaceFolder) {
                 const projectNotesPath = path.join(workspaceFolder.uri.fsPath, storageFolder);
-                if (!fs.existsSync(projectNotesPath)) {
-                    fs.mkdirSync(projectNotesPath, { recursive: true });
+                try {
+                    await fsPromises.mkdir(projectNotesPath, { recursive: true });
+                }
+                catch (error) {
+                    log(`Could not create project notes folder: ${error}`);
                 }
                 return projectNotesPath;
             }
@@ -484,72 +519,105 @@ class NotesViewProvider {
         else {
             notesRoot = path.join(os.homedir(), 'Notes');
         }
-        if (!fs.existsSync(notesRoot)) {
-            fs.mkdirSync(notesRoot, { recursive: true });
+        try {
+            await fsPromises.mkdir(notesRoot, { recursive: true });
+        }
+        catch (error) {
+            log(`Could not create default notes folder: ${error}`);
         }
         return notesRoot;
     }
     getDailyNotesFolder() {
-        const dailyRoot = path.join(os.homedir(), 'Notes', 'Daily-notes');
-        if (!fs.existsSync(dailyRoot)) {
-            fs.mkdirSync(dailyRoot, { recursive: true });
+        const dailyRoot = path.join(os.homedir(), 'Notes', DAILY_NOTES_FOLDER_NAME);
+        try {
+            if (!fs.existsSync(dailyRoot)) {
+                fs.mkdirSync(dailyRoot, { recursive: true });
+            }
+        }
+        catch (error) {
+            log(`Could not create daily notes folder: ${error}`);
         }
         return dailyRoot;
     }
     async createNote(title, isTodoList, folderName) {
-        const notesFolder = this.getNotesFolder();
-        if (!notesFolder) {
-            vscode.window.showErrorMessage('Kan inte skapa anteckning: ingen anteckningsmapp är konfigurerad.');
-            return;
-        }
-        if (!fs.existsSync(notesFolder)) {
-            fs.mkdirSync(notesFolder, { recursive: true });
-        }
-        const targetFolder = folderName ? path.join(notesFolder, folderName) : notesFolder;
-        if (folderName && !fs.existsSync(targetFolder)) {
-            fs.mkdirSync(targetFolder, { recursive: true });
-        }
-        const fileName = `${title}.md`;
-        const filePath = path.join(targetFolder, fileName);
-        if (!fs.existsSync(filePath)) {
-            console.log(`Filen ${fileName} finns inte. Skapar den i ${targetFolder}.`);
-            let content = `# ${title}\n\n`;
-            if (isTodoList) {
-                content += `- [ ] First item\n- [ ] Second item\n- [ ] Third item\n`;
+        try {
+            const notesFolder = await this.getNotesFolder();
+            if (!notesFolder) {
+                vscode.window.showErrorMessage('Cannot create note: no notes folder is configured.');
+                return;
+            }
+            // Måste inte 'awaita' denna, men det skadar inte
+            await fsPromises.mkdir(notesFolder, { recursive: true });
+            const targetFolder = folderName ? path.join(notesFolder, folderName) : notesFolder;
+            if (folderName) {
+                await fsPromises.mkdir(targetFolder, { recursive: true });
+            }
+            const fileName = `${title}.md`;
+            const filePath = path.join(targetFolder, fileName);
+            // Använd 'access' för att kolla om filen finns (async)
+            let fileExists = true;
+            try {
+                await fsPromises.access(filePath);
+            }
+            catch {
+                fileExists = false;
+            }
+            if (!fileExists) {
+                log(`File ${fileName} does not exist. Creating it in ${targetFolder}.`);
+                let content = `# ${title}\n\n`;
+                if (isTodoList) {
+                    content += `- [ ] First item\n- [ ] Second item\n- [ ] Third item\n`;
+                }
+                else {
+                    content += `Write your notes here...\n`;
+                }
+                await fsPromises.writeFile(filePath, content, 'utf-8');
+                if (folderName) {
+                    const metadata = { folder: folderName };
+                    await this.setMetadata(filePath, metadata);
+                }
             }
             else {
-                content += `Write your notes here...\n`;
+                log(`File ${fileName} already exists. Opening it instead of overwriting.`);
             }
-            fs.writeFileSync(filePath, content, 'utf-8');
-            if (folderName) {
-                const metadata = { folder: folderName };
-                await this.setMetadata(filePath, metadata);
-            }
+            const doc = await vscode.workspace.openTextDocument(filePath);
+            await vscode.window.showTextDocument(doc);
         }
-        else {
-            console.log(`Filen ${fileName} finns redan. Öppnar den istället för att skriva över.`);
+        catch (error) {
+            vscode.window.showErrorMessage(`Failed to create note: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            log('Create note error:', error);
         }
-        const doc = await vscode.workspace.openTextDocument(filePath);
-        await vscode.window.showTextDocument(doc);
     }
     async createNoteFromDate(dateString) {
-        const date = new Date(dateString);
-        // --- FIX FÖR DATUM-BUGG ---
-        const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
-        const title = `Note ${localDate.toISOString().split('T')[0]}`;
-        const dailyNotesFolder = this.getDailyNotesFolder();
-        const filePath = path.join(dailyNotesFolder, `${title}.md`);
-        if (!fs.existsSync(filePath)) {
-            console.log(`Skapar daglig anteckning: ${filePath}`);
-            let content = `# ${title}\n\n`;
-            content += `Write your notes here...\n`;
-            fs.writeFileSync(filePath, content, 'utf-8');
+        try {
+            const date = new Date(dateString);
+            const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
+            const title = `Note ${localDate.toISOString().split('T')[0]}`;
+            const dailyNotesFolder = this.getDailyNotesFolder(); // Denna är sync
+            const filePath = path.join(dailyNotesFolder, `${title}.md`);
+            let fileExists = true;
+            try {
+                await fsPromises.access(filePath);
+            }
+            catch {
+                fileExists = false;
+            }
+            if (!fileExists) {
+                log(`Creating daily note: ${filePath}`);
+                let content = `# ${title}\n\n`;
+                content += `Write your notes here...\n`;
+                await fsPromises.writeFile(filePath, content, 'utf-8');
+            }
+            else {
+                log(`Opening existing daily note: ${filePath}`);
+            }
+            const doc = await vscode.workspace.openTextDocument(filePath);
+            await vscode.window.showTextDocument(doc);
         }
-        else {
-            console.log(`Öppnar befintlig daglig anteckning: ${filePath}`);
+        catch (error) {
+            vscode.window.showErrorMessage(`Failed to create daily note: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            log('Create daily note error:', error);
         }
-        const doc = await vscode.workspace.openTextDocument(filePath);
-        await vscode.window.showTextDocument(doc);
     }
     openNote(filePath) {
         vscode.window.showTextDocument(vscode.Uri.file(filePath));
@@ -557,28 +625,40 @@ class NotesViewProvider {
     async deleteNote(filePath, title) {
         const confirm = await vscode.window.showWarningMessage(`Delete "${title}"?`, 'Yes', 'No');
         if (confirm === 'Yes') {
-            fs.unlinkSync(filePath);
-            await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
-            this.refresh(); // Tvinga uppdatering
+            try {
+                await fsPromises.unlink(filePath);
+                await this._context.globalState.update(`note_metadata_${filePath}`, undefined);
+                this.refresh();
+            }
+            catch (error) {
+                vscode.window.showErrorMessage(`Failed to delete note: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                log('Delete note error:', error);
+            }
         }
     }
     async toggleTodo(filePath, lineNumber) {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const lines = content.split('\n');
-        if (lineNumber < lines.length) {
-            const line = lines[lineNumber];
-            if (line.includes('[ ]')) {
-                lines[lineNumber] = line.replace('[ ]', '[x]');
+        try {
+            const content = await fsPromises.readFile(filePath, 'utf-8');
+            const lines = content.split('\n');
+            if (lineNumber < lines.length) {
+                const line = lines[lineNumber];
+                if (line.includes('[ ]')) {
+                    lines[lineNumber] = line.replace('[ ]', '[x]');
+                }
+                else if (line.includes('[x]')) {
+                    lines[lineNumber] = line.replace('[x]', '[ ]');
+                }
+                await fsPromises.writeFile(filePath, lines.join('\n'), 'utf-8');
+                this.refresh();
             }
-            else if (line.includes('[x]')) {
-                lines[lineNumber] = line.replace('[x]', '[ ]');
-            }
-            fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
-            this.refresh(); // Tvinga uppdatering
+        }
+        catch (error) {
+            vscode.window.showErrorMessage(`Failed to toggle todo: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            log('Toggle todo error:', error);
         }
     }
     _getHtmlForWebview(webview) {
-        // --- NY/ÄNDRAD --- (Lade till 'collapseState'-logik i JavaScript)
+        // --- NY/ÄNDRAD --- (Lade till 'collapseState' och bytte engelska i JS)
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
@@ -972,451 +1052,433 @@ class NotesViewProvider {
             <div id="context-menu" class="context-menu"></div>
 
             <script>
-                const vscode = acquireVsCodeApi();
-                let currentNotes = { pinned: [], folders: {}, root: [] };
-                let deadlineDates = [];
-                let currentDate = new Date();
-                let selectedDate = null;
-                let contextMenuTarget = null;
-                let availableFolders = [];
-                
-                // --- NY/ÄNDRAD --- (Minnet för att spara mapp-lägen)
-                let collapseState = {};
+                (function() {
+                    const vscode = acquireVsCodeApi();
+                    let currentNotes = { pinned: [], folders: {}, root: [] };
+                    let deadlineDates = [];
+                    let currentDate = new Date();
+                    let selectedDate = null;
+                    let contextMenuTarget = null;
+                    let availableFolders = [];
+                    
+                    // --- NY/ÄNDRAD --- (Minnet för att spara mapp-lägen)
+                    let collapseState = {};
 
-                // Request initial notes
-                vscode.postMessage({ type: 'requestNotes' });
-                vscode.postMessage({ type: 'getFolders' });
+                    // Request initial notes
+                    vscode.postMessage({ type: 'requestNotes' });
+                    vscode.postMessage({ type: 'getFolders' });
 
-                // Handle messages from extension
-                window.addEventListener('message', event => {
-                    const message = event.data;
-                    if (message.type === 'notesUpdate') {
-                        const notesData = message.notesData; 
-                        currentNotes = notesData; 
-                        deadlineDates = notesData.deadlines || []; 
-                        
-                        console.log('WebView tog emot deadlines:', deadlineDates);
-                        
-                        renderNotes();
-                        renderCalendar();
-                    } else if (message.type === 'foldersUpdate') {
-                        availableFolders = message.folders;
-                    }
-                });
-
-                function renderNotes() {
-                    const container = document.getElementById('notes-container');
-                    container.innerHTML = '';
-
-                    const hasNotes = currentNotes.pinned.length > 0 || 
-                                     Object.keys(currentNotes.folders).length > 0 || 
-                                     currentNotes.root.length > 0;
-
-                    if (!hasNotes) {
-                        container.innerHTML = '<div style="padding: 20px; text-align: center; opacity: 0.6;">No notes yet. Create one using the buttons above!</div>';
-                        return;
-                    }
-
-                    // Render pinned notes
-                    if (currentNotes.pinned.length > 0) {
-                        const pinnedHeader = document.createElement('div');
-                        pinnedHeader.className = 'section-header';
-                        pinnedHeader.textContent = 'Pinned';
-                        container.appendChild(pinnedHeader);
-
-                        currentNotes.pinned.forEach(note => {
-                            container.appendChild(createNoteElement(note, true));
-                        });
-                    }
-
-                    // Render folders
-                    if (Object.keys(currentNotes.folders).length > 0) {
-                        const foldersHeader = document.createElement('div');
-                        foldersHeader.className = 'section-header';
-                        foldersHeader.textContent = 'Folders';
-                        container.appendChild(foldersHeader);
-
-                        Object.keys(currentNotes.folders).sort().forEach(folderName => {
-                            const folderDiv = document.createElement('div');
-                            folderDiv.className = 'folder-item';
-
-                            const folderHeaderDiv = document.createElement('div');
-                            folderHeaderDiv.className = 'folder-header';
-
-                            const arrow = document.createElement('span');
-                            arrow.className = 'folder-arrow';
-                            arrow.textContent = '▼';
-
-                            const icon = document.createElement('span');
-                            icon.className = 'folder-icon';
-                            if (folderName === 'Dagliga Anteckningar (Global)') {
-                                icon.textContent = '📅'; 
-                            } else {
-                                icon.textContent = '📁';
-                            }
-
-                            const name = document.createElement('span');
-                            name.className = 'folder-name';
-                            name.textContent = folderName;
-
-                            folderHeaderDiv.appendChild(arrow);
-                            folderHeaderDiv.appendChild(icon);
-                            folderHeaderDiv.appendChild(name);
-
-                            const folderContents = document.createElement('div');
-                            folderContents.className = 'folder-contents';
+                    window.addEventListener('message', event => {
+                        const message = event.data;
+                        if (message.type === 'notesUpdate') {
+                            const notesData = message.notesData; 
+                            currentNotes = notesData; 
+                            deadlineDates = notesData.deadlines || []; 
                             
-                            // --- NY/ÄNDRAD --- (Läser från minnet)
-                            if (collapseState[folderName] === 'collapsed') {
-                                arrow.classList.add('collapsed');
-                                folderContents.classList.add('collapsed');
-                            }
+                            renderNotes();
+                            renderCalendar();
+                        } else if (message.type === 'foldersUpdate') {
+                            availableFolders = message.folders;
+                        }
+                    });
 
-                            currentNotes.folders[folderName].forEach(note => {
-                                folderContents.appendChild(createNoteElement(note, note.pinned));
+                    function renderNotes() {
+                        const container = document.getElementById('notes-container');
+                        container.innerHTML = '';
+
+                        const hasNotes = currentNotes.pinned.length > 0 || 
+                                        Object.keys(currentNotes.folders).length > 0 || 
+                                        currentNotes.root.length > 0;
+
+                        if (!hasNotes) {
+                            container.innerHTML = '<div style="padding: 20px; text-align: center; opacity: 0.6;">No notes yet. Create one using the buttons above!</div>';
+                            return;
+                        }
+
+                        if (currentNotes.pinned.length > 0) {
+                            const pinnedHeader = document.createElement('div');
+                            pinnedHeader.className = 'section-header';
+                            pinnedHeader.textContent = 'Pinned';
+                            container.appendChild(pinnedHeader);
+
+                            currentNotes.pinned.forEach(note => {
+                                container.appendChild(createNoteElement(note, true));
                             });
+                        }
 
-                            folderHeaderDiv.onclick = () => {
-                                // --- NY/ÄNDRAD --- (Spara till minnet)
+                        if (Object.keys(currentNotes.folders).length > 0) {
+                            const foldersHeader = document.createElement('div');
+                            foldersHeader.className = 'section-header';
+                            foldersHeader.textContent = 'Folders';
+                            container.appendChild(foldersHeader);
+
+                            Object.keys(currentNotes.folders).sort().forEach(folderName => {
+                                const folderDiv = document.createElement('div');
+                                folderDiv.className = 'folder-item';
+
+                                const folderHeaderDiv = document.createElement('div');
+                                folderHeaderDiv.className = 'folder-header';
+
+                                const arrow = document.createElement('span');
+                                arrow.className = 'folder-arrow';
+                                arrow.textContent = '▼';
+
+                                const icon = document.createElement('span');
+                                icon.className = 'folder-icon';
+                                if (folderName === 'Daily Notes (Global)') {
+                                    icon.textContent = '📅'; 
+                                } else {
+                                    icon.textContent = '📁';
+                                }
+
+                                const name = document.createElement('span');
+                                name.className = 'folder-name';
+                                name.textContent = folderName;
+
+                                folderHeaderDiv.appendChild(arrow);
+                                folderHeaderDiv.appendChild(icon);
+                                folderHeaderDiv.appendChild(name);
+
+                                const folderContents = document.createElement('div');
+                                folderContents.className = 'folder-contents';
+                                
+                                // --- NY/ÄNDRAD --- (Läser från minnet)
+                                if (collapseState[folderName] === 'collapsed') {
+                                    arrow.classList.add('collapsed');
+                                    folderContents.classList.add('collapsed');
+                                }
+
+                                currentNotes.folders[folderName].forEach(note => {
+                                    folderContents.appendChild(createNoteElement(note, note.pinned));
+                                });
+
+                                folderHeaderDiv.onclick = () => {
+                                    // --- NY/ÄNDRAD --- (Spara till minnet)
+                                    const isCollapsed = arrow.classList.toggle('collapsed');
+                                    folderContents.classList.toggle('collapsed');
+                                    collapseState[folderName] = isCollapsed ? 'collapsed' : 'expanded';
+                                };
+
+                                folderDiv.appendChild(folderHeaderDiv);
+                                folderDiv.appendChild(folderContents);
+                                container.appendChild(folderDiv);
+                            });
+                        }
+
+                        if (currentNotes.root.length > 0) {
+                            const notesHeader = document.createElement('div');
+                            notesHeader.className = 'section-header';
+                            notesHeader.textContent = 'Notes';
+                            container.appendChild(notesHeader);
+
+                            currentNotes.root.forEach(note => {
+                                container.appendChild(createNoteElement(note, false));
+                            });
+                        }
+                    }
+
+                    function createNoteElement(note, isPinned) {
+                        const noteDiv = document.createElement('div');
+                        noteDiv.className = 'note-item';
+                        
+                        const headerDiv = document.createElement('div');
+                        headerDiv.className = 'note-header';
+                        
+                        const titleDiv = document.createElement('div');
+                        titleDiv.className = 'note-title';
+                        
+                        let todoListDiv;
+
+                        if (note.isTodoList && note.todos.length > 0) {
+                            const arrow = document.createElement('span');
+                            arrow.className = 'collapse-arrow';
+                            arrow.textContent = '▼';
+                            arrow.onclick = (e) => {
+                                e.stopPropagation();
                                 const isCollapsed = arrow.classList.toggle('collapsed');
-                                folderContents.classList.toggle('collapsed');
-                                collapseState[folderName] = isCollapsed ? 'collapsed' : 'expanded';
+                                if (todoListDiv) {
+                                    todoListDiv.classList.toggle('collapsed');
+                                }
+                                collapseState[note.filePath] = isCollapsed ? 'collapsed' : 'expanded';
                             };
-
-                            folderDiv.appendChild(folderHeaderDiv);
-                            folderDiv.appendChild(folderContents);
-                            container.appendChild(folderDiv);
-                        });
-                    }
-
-                    // Render root notes
-                    if (currentNotes.root.length > 0) {
-                        const notesHeader = document.createElement('div');
-                        notesHeader.className = 'section-header';
-                        notesHeader.textContent = 'Notes';
-                        container.appendChild(notesHeader);
-
-                        currentNotes.root.forEach(note => {
-                            container.appendChild(createNoteElement(note, false));
-                        });
-                    }
-                }
-
-                function createNoteElement(note, isPinned) {
-                    const noteDiv = document.createElement('div');
-                    noteDiv.className = 'note-item';
-                    
-                    const headerDiv = document.createElement('div');
-                    headerDiv.className = 'note-header';
-                    
-                    const titleDiv = document.createElement('div');
-                    titleDiv.className = 'note-title';
-                    
-                    let todoListDiv; // --- NY/ÄNDRAD --- (Deklarera här)
-
-                    // Add collapse arrow for todo lists
-                    if (note.isTodoList && note.todos.length > 0) {
-                        const arrow = document.createElement('span');
-                        arrow.className = 'collapse-arrow';
-                        arrow.textContent = '▼';
-                        arrow.onclick = (e) => {
-                            e.stopPropagation();
-                            // --- NY/ÄNDRAD --- (Spara till minnet)
-                            const isCollapsed = arrow.classList.toggle('collapsed');
-                            if (todoListDiv) {
-                                todoListDiv.classList.toggle('collapsed');
+                            titleDiv.appendChild(arrow);
+                        }
+                        
+                        const iconSpan = document.createElement('span');
+                        iconSpan.className = 'note-icon';
+                        iconSpan.textContent = note.isTodoList ? '☑' : '📝';
+                        titleDiv.appendChild(iconSpan);
+                        
+                        const titleSpan = document.createElement('span');
+                        titleSpan.textContent = note.title;
+                        titleDiv.appendChild(titleSpan);
+                        
+                        titleDiv.onclick = (e) => {
+                            if (!e.target.classList.contains('collapse-arrow')) {
+                                vscode.postMessage({
+                                    type: 'openNote',
+                                    filePath: note.filePath
+                                });
                             }
-                            collapseState[note.filePath] = isCollapsed ? 'collapsed' : 'expanded';
                         };
-                        titleDiv.appendChild(arrow);
-                    }
-                    
-                    const iconSpan = document.createElement('span');
-                    iconSpan.className = 'note-icon';
-                    iconSpan.textContent = note.isTodoList ? '☑' : '📝';
-                    titleDiv.appendChild(iconSpan);
-                    
-                    const titleSpan = document.createElement('span');
-                    titleSpan.textContent = note.title;
-                    titleDiv.appendChild(titleSpan);
-                    
-                    titleDiv.onclick = (e) => {
-                        if (!e.target.classList.contains('collapse-arrow')) {
+
+                        noteDiv.oncontextmenu = (e) => {
+                            e.preventDefault();
+                            showContextMenu(e, note);
+                        };
+                        
+                        const actionsDiv = document.createElement('div');
+                        actionsDiv.className = 'note-actions';
+                        
+                        const pinBtn = document.createElement('button');
+                        pinBtn.className = 'pin-btn' + (isPinned ? ' pinned' : '');
+                        pinBtn.innerHTML = '📌';
+                        pinBtn.title = isPinned ? 'Unpin note' : 'Pin note';
+                        pinBtn.onclick = (e) => {
+                            e.stopPropagation();
                             vscode.postMessage({
-                                type: 'openNote',
+                                type: 'pinNote',
                                 filePath: note.filePath
                             });
-                        }
-                    };
-
-                    // Context menu
-                    noteDiv.oncontextmenu = (e) => {
-                        e.preventDefault();
-                        showContextMenu(e, note);
-                    };
-                    
-                    const actionsDiv = document.createElement('div');
-                    actionsDiv.className = 'note-actions';
-                    
-                    const pinBtn = document.createElement('button');
-                    pinBtn.className = 'pin-btn' + (isPinned ? ' pinned' : '');
-                    pinBtn.innerHTML = '📌';
-                    pinBtn.title = isPinned ? 'Unpin note' : 'Pin note';
-                    pinBtn.onclick = (e) => {
-                        e.stopPropagation();
-                        vscode.postMessage({
-                            type: 'pinNote',
-                            filePath: note.filePath
-                        });
-                    };
-                    
-                    const deleteBtn = document.createElement('button');
-                    deleteBtn.className = 'delete-btn';
-                    deleteBtn.innerHTML = '🗑';
-                    deleteBtn.onclick = (e) => {
-                        e.stopPropagation();
-                        vscode.postMessage({
-                            type: 'deleteNote',
-                            filePath: note.filePath,
-                            title: note.title
-                        });
-                    };
-                    
-                    actionsDiv.appendChild(pinBtn);
-                    actionsDiv.appendChild(deleteBtn);
-                    
-                    headerDiv.appendChild(titleDiv);
-                    headerDiv.appendChild(actionsDiv);
-                    noteDiv.appendChild(headerDiv);
-                    
-                    if (note.isTodoList && note.todos.length > 0) {
-                        todoListDiv = document.createElement('div'); // --- NY/ÄNDRAD --- (Tilldela här)
-                        todoListDiv.className = 'todo-list';
-                        
-                        // --- NY/ÄNDRAD --- (Läser från minnet)
-                        if (collapseState[note.filePath] === 'collapsed') {
-                            todoListDiv.classList.add('collapsed');
-                            const arrow = titleDiv.querySelector('.collapse-arrow');
-                            if (arrow) {
-                                arrow.classList.add('collapsed');
-                            }
-                        }
-
-                        note.todos.forEach(todo => {
-                            const todoDiv = document.createElement('div');
-                            todoDiv.className = 'todo-item';
-                            todoDiv.onclick = () => {
-                                vscode.postMessage({
-                                    type: 'toggleTodo',
-                                    filePath: note.filePath,
-                                    lineNumber: todo.lineNumber
-                                });
-                            };
-                            
-                            const checkbox = document.createElement('div');
-                            checkbox.className = 'todo-checkbox' + (todo.isChecked ? ' todo-checked' : '');
-                            
-                            const text = document.createElement('span');
-                            text.className = 'todo-text' + (todo.isChecked ? ' checked' : '');
-                            text.textContent = todo.text;
-                            
-                            todoDiv.appendChild(checkbox);
-                            todoDiv.appendChild(text);
-                            todoListDiv.appendChild(todoDiv);
-                        });
-                        
-                        noteDiv.appendChild(todoListDiv);
-                    }
-                    
-                    return noteDiv;
-                }
-
-                function showContextMenu(event, note) {
-                    const menu = document.getElementById('context-menu');
-                    contextMenuTarget = note;
-                    
-                    menu.innerHTML = '';
-                    
-                    // Pin/Unpin option
-                    const pinItem = document.createElement('div');
-                    pinItem.className = 'context-menu-item';
-                    pinItem.textContent = note.pinned ? '📌 Unpin Note' : '📌 Pin Note';
-                    pinItem.onclick = () => {
-                        vscode.postMessage({
-                            type: 'pinNote',
-                            filePath: note.filePath
-                        });
-                        hideContextMenu();
-                    };
-                    menu.appendChild(pinItem);
-                    
-                    menu.appendChild(document.createElement('div')).className = 'context-menu-separator';
-                    
-                    // Move to Root
-                    const moveToRootItem = document.createElement('div');
-                    moveToRootItem.className = 'context-menu-item';
-                    moveToRootItem.textContent = '📂 Move to Root';
-                    moveToRootItem.onclick = () => {
-                        vscode.postMessage({
-                            type: 'moveToFolder',
-                            filePath: note.filePath,
-                            folderName: ''
-                        });
-                        hideContextMenu();
-                    };
-                    menu.appendChild(moveToRootItem);
-                    
-                    // Move to folders
-                    if (availableFolders.length > 0) {
-                        availableFolders.forEach(folder => {
-                            const folderItem = document.createElement('div');
-                            folderItem.className = 'context-menu-item';
-                            folderItem.textContent = '📁 Move to ' + folder;
-                            folderItem.onclick = () => {
-                                vscode.postMessage({
-                                    type: 'moveToFolder',
-                                    filePath: note.filePath,
-                                    folderName: folder
-                                });
-                                hideContextMenu();
-                            };
-                            menu.appendChild(folderItem);
-                        });
-                    }
-                    
-                    menu.style.display = 'block';
-                    menu.style.left = event.pageX + 'px';
-                    menu.style.top = event.pageY + 'px';
-                }
-
-                function hideContextMenu() {
-                    const menu = document.getElementById('context-menu');
-                    menu.style.display = 'none';
-                    contextMenuTarget = null;
-                }
-
-                // Hide context menu on click outside
-                document.addEventListener('click', hideContextMenu);
-
-                // Calendar functionality
-                function renderCalendar() {
-                    const calendar = document.getElementById('calendar');
-                    const monthLabel = document.getElementById('current-month');
-                    
-                    const year = currentDate.getFullYear();
-                    const month = currentDate.getMonth(); // 0-indexerad (Jan=0, Nov=10)
-                    
-                    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                                      'July', 'August', 'September', 'October', 'November', 'December'];
-                    monthLabel.textContent = \`\${monthNames[month]} \${year}\`;
-                    
-                    calendar.innerHTML = '';
-                    
-                    // Day headers
-                    const dayHeaders = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-                    dayHeaders.forEach(day => {
-                        const header = document.createElement('div');
-                        header.className = 'calendar-day-header';
-                        header.textContent = day;
-                        calendar.appendChild(header);
-                    });
-                    
-                    // Get first day of month and number of days
-                    const firstDay = new Date(year, month, 1).getDay();
-                    const daysInMonth = new Date(year, month + 1, 0).getDate();
-                    const daysInPrevMonth = new Date(year, month, 0).getDate();
-                    
-                    const today = new Date();
-                    const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
-                    
-                    // Previous month days
-                    for (let i = firstDay - 1; i >= 0; i--) {
-                        const day = document.createElement('div');
-                        day.className = 'calendar-day other-month';
-                        day.textContent = daysInPrevMonth - i;
-                        calendar.appendChild(day);
-                    }
-                    
-                    // Current month days
-                    for (let day = 1; day <= daysInMonth; day++) {
-                        const dayDiv = document.createElement('div');
-                        dayDiv.className = 'calendar-day';
-                        dayDiv.textContent = day;
-                        
-                        // --- TIDSZONS-FIX ---
-                        const monthString = String(month + 1).padStart(2, '0');
-                        const dayString = String(day).padStart(2, '0');
-                        const dateString = \`\${year}-\${monthString}-\${dayString}\`;
-
-                        if (deadlineDates.includes(dateString)) {
-                            dayDiv.classList.add('deadline');
-                        }
-                        
-                        const dayDate = new Date(year, month, day);
-                        
-                        if (isCurrentMonth && day === today.getDate()) {
-                            dayDiv.classList.add('today');
-                        }
-                        
-                        if (selectedDate && 
-                            selectedDate.getFullYear() === year && 
-                            selectedDate.getMonth() === month && 
-                            selectedDate.getDate() === day) {
-                            dayDiv.classList.add('selected');
-                        }
-                        
-                        dayDiv.onclick = () => {
-                            selectedDate = dayDate;
-                            vscode.postMessage({
-                                type: 'dateClicked',
-                                date: dayDate.toISOString()
-                            });
-                            renderCalendar();
                         };
                         
-                        calendar.appendChild(dayDiv);
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.className = 'delete-btn';
+                        deleteBtn.innerHTML = '🗑';
+                        deleteBtn.onclick = (e) => {
+                            e.stopPropagation();
+                            vscode.postMessage({
+                                type: 'deleteNote',
+                                filePath: note.filePath,
+                                title: note.title
+                            });
+                        };
+                        
+                        actionsDiv.appendChild(pinBtn);
+                        actionsDiv.appendChild(deleteBtn);
+                        
+                        headerDiv.appendChild(titleDiv);
+                        headerDiv.appendChild(actionsDiv);
+                        noteDiv.appendChild(headerDiv);
+                        
+                        if (note.isTodoList && note.todos.length > 0) {
+                            todoListDiv = document.createElement('div');
+                            todoListDiv.className = 'todo-list';
+                            
+                            if (collapseState[note.filePath] === 'collapsed') {
+                                todoListDiv.classList.add('collapsed');
+                                const arrow = titleDiv.querySelector('.collapse-arrow');
+                                if (arrow) {
+                                    arrow.classList.add('collapsed');
+                                }
+                            }
+
+                            note.todos.forEach(todo => {
+                                const todoDiv = document.createElement('div');
+                                todoDiv.className = 'todo-item';
+                                todoDiv.onclick = () => {
+                                    vscode.postMessage({
+                                        type: 'toggleTodo',
+                                        filePath: note.filePath,
+                                        lineNumber: todo.lineNumber
+                                    });
+                                };
+                                
+                                const checkbox = document.createElement('div');
+                                checkbox.className = 'todo-checkbox' + (todo.isChecked ? ' todo-checked' : '');
+                                
+                                const text = document.createElement('span');
+                                text.className = 'todo-text' + (todo.isChecked ? ' checked' : '');
+                                text.textContent = todo.text;
+                                
+                                todoDiv.appendChild(checkbox);
+                                todoDiv.appendChild(text);
+                                todoListDiv.appendChild(todoDiv);
+                            });
+                            
+                            noteDiv.appendChild(todoListDiv);
+                        }
+                        
+                        return noteDiv;
+                    }
+
+                    function showContextMenu(event, note) {
+                        const menu = document.getElementById('context-menu');
+                        contextMenuTarget = note;
+                        
+                        menu.innerHTML = '';
+                        
+                        const pinItem = document.createElement('div');
+                        pinItem.className = 'context-menu-item';
+                        pinItem.textContent = note.pinned ? '📌 Unpin Note' : '📌 Pin Note';
+                        pinItem.onclick = () => {
+                            vscode.postMessage({
+                                type: 'pinNote',
+                                filePath: note.filePath
+                            });
+                            hideContextMenu();
+                        };
+                        menu.appendChild(pinItem);
+                        
+                        menu.appendChild(document.createElement('div')).className = 'context-menu-separator';
+                        
+                        const moveToRootItem = document.createElement('div');
+                        moveToRootItem.className = 'context-menu-item';
+                        moveToRootItem.textContent = '📂 Move to Root';
+                        moveToRootItem.onclick = () => {
+                            vscode.postMessage({
+                                type: 'moveToFolder',
+                                filePath: note.filePath,
+                                folderName: ''
+                            });
+                            hideContextMenu();
+                        };
+                        menu.appendChild(moveToRootItem);
+                        
+                        if (availableFolders.length > 0) {
+                            availableFolders.forEach(folder => {
+                                const folderItem = document.createElement('div');
+                                folderItem.className = 'context-menu-item';
+                                folderItem.textContent = '📁 Move to ' + folder;
+                                folderItem.onclick = () => {
+                                    vscode.postMessage({
+                                        type: 'moveToFolder',
+                                        filePath: note.filePath,
+                                        folderName: folder
+                                    });
+                                    hideContextMenu();
+                                };
+                                menu.appendChild(folderItem);
+                            });
+                        }
+                        
+                        menu.style.display = 'block';
+                        menu.style.left = event.pageX + 'px';
+                        menu.style.top = event.pageY + 'px';
+                    }
+
+                    function hideContextMenu() {
+                        const menu = document.getElementById('context-menu');
+                        menu.style.display = 'none';
+                        contextMenuTarget = null;
+                    }
+
+                    document.addEventListener('click', hideContextMenu);
+
+                    function renderCalendar() {
+                        const calendar = document.getElementById('calendar');
+                        const monthLabel = document.getElementById('current-month');
+                        
+                        const year = currentDate.getFullYear();
+                        const month = currentDate.getMonth();
+                        
+                        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                                          'July', 'August', 'September', 'October', 'November', 'December'];
+                        monthLabel.textContent = \`\${monthNames[month]} \${year}\`;
+                        
+                        calendar.innerHTML = '';
+                        
+                        const dayHeaders = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+                        dayHeaders.forEach(day => {
+                            const header = document.createElement('div');
+                            header.className = 'calendar-day-header';
+                            header.textContent = day;
+                            calendar.appendChild(header);
+                        });
+                        
+                        const firstDay = new Date(year, month, 1).getDay();
+                        const daysInMonth = new Date(year, month + 1, 0).getDate();
+                        const daysInPrevMonth = new Date(year, month, 0).getDate();
+                        
+                        const today = new Date();
+                        const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
+                        
+                        for (let i = firstDay - 1; i >= 0; i--) {
+                            const day = document.createElement('div');
+                            day.className = 'calendar-day other-month';
+                            day.textContent = daysInPrevMonth - i;
+                            calendar.appendChild(day);
+                        }
+                        
+                        for (let day = 1; day <= daysInMonth; day++) {
+                            const dayDiv = document.createElement('div');
+                            dayDiv.className = 'calendar-day';
+                            dayDiv.textContent = day;
+                            
+                            const monthString = String(month + 1).padStart(2, '0');
+                            const dayString = String(day).padStart(2, '0');
+                            const dateString = \`\${year}-\${monthString}-\${dayString}\`;
+
+                            if (deadlineDates.includes(dateString)) {
+                                dayDiv.classList.add('deadline');
+                            }
+                            
+                            const dayDate = new Date(year, month, day);
+                            
+                            if (isCurrentMonth && day === today.getDate()) {
+                                dayDiv.classList.add('today');
+                            }
+                            
+                            if (selectedDate && 
+                                selectedDate.getFullYear() === year && 
+                                selectedDate.getMonth() === month && 
+                                selectedDate.getDate() === day) {
+                                dayDiv.classList.add('selected');
+                            }
+                            
+                            dayDiv.onclick = () => {
+                                selectedDate = dayDate;
+                                vscode.postMessage({
+                                    type: 'dateClicked',
+                                    date: dayDate.toISOString()
+                                });
+                                renderCalendar();
+                            };
+                            
+                            calendar.appendChild(dayDiv);
+                        }
+                        
+                        const totalCells = firstDay + daysInMonth;
+                        const remainingCells = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
+                        
+                        for (let day = 1; day <= remainingCells; day++) {
+                            const dayDiv = document.createElement('div');
+                            dayDiv.className = 'calendar-day other-month';
+                            dayDiv.textContent = day;
+                            calendar.appendChild(dayDiv);
+                        }
                     }
                     
-                    // Next month days
-                    const totalCells = firstDay + daysInMonth;
-                    const remainingCells = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
+                    document.getElementById('prev-month').onclick = () => {
+                        currentDate.setMonth(currentDate.getMonth() - 1);
+                        renderCalendar();
+                    };
                     
-                    for (let day = 1; day <= remainingCells; day++) {
-                        const dayDiv = document.createElement('div');
-                        dayDiv.className = 'calendar-day other-month';
-                        dayDiv.textContent = day;
-                        calendar.appendChild(dayDiv);
-                    }
-                }
-                
-                document.getElementById('prev-month').onclick = () => {
-                    currentDate.setMonth(currentDate.getMonth() - 1);
+                    document.getElementById('next-month').onclick = () => {
+                        currentDate.setMonth(currentDate.getMonth() + 1);
+                        renderCalendar();
+                    };
+                    
+                    document.getElementById('hide-calendar').onclick = () => {
+                        document.getElementById('calendar-content').classList.add('hidden');
+                        document.getElementById('show-calendar-btn').style.display = 'block';
+                        document.getElementById('calendar-container').classList.add('collapsed');
+                    };
+                    
+                    document.getElementById('show-calendar-btn').onclick = () => {
+                        document.getElementById('calendar-content').classList.remove('hidden');
+                        document.getElementById('show-calendar-btn').style.display = 'none';
+                        document.getElementById('calendar-container').classList.remove('collapsed');
+                    };
+                    
                     renderCalendar();
-                };
-                
-                document.getElementById('next-month').onclick = () => {
-                    currentDate.setMonth(currentDate.getMonth() + 1);
-                    renderCalendar();
-                };
-                
-                // Toggle calendar visibility
-                document.getElementById('hide-calendar').onclick = () => {
-                    document.getElementById('calendar-content').classList.add('hidden');
-                    document.getElementById('show-calendar-btn').style.display = 'block';
-                    document.getElementById('calendar-container').classList.add('collapsed');
-                };
-                
-                document.getElementById('show-calendar-btn').onclick = () => {
-                    document.getElementById('calendar-content').classList.remove('hidden');
-                    document.getElementById('show-calendar-btn').style.display = 'none';
-                    document.getElementById('calendar-container').classList.remove('collapsed');
-                };
-                
-                renderCalendar();
+                }()); // --- NY/ÄNDRAD --- (Avslutar IIFE)
             </script>
         </body>
         </html>`;
     }
 }
-function deactivate() { }
+function deactivate() {
+    log('Quick Notes extension deactivated');
+}
 //# sourceMappingURL=extension.js.map

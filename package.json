@@ -2,7 +2,7 @@
   "name": "quick-notes-extension",
   "displayName": "Quick Notes & Todos",
   "description": "Quick and simple notes and todo lists in VS Code with calendar",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "ThBuKj",
   "engines": {
     "vscode": "^1.75.0"
