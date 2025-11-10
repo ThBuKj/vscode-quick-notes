@@ -6,3 +6,12 @@
 
     # Mappen för snabba anteckningar
     quick-notes/
+
+    # TypeScript build-info
+    *.tsbuildinfo
+
+    # Installationsfiler 
+    *.vsix
+
+    # VS Code metadata
+    .vscode/
