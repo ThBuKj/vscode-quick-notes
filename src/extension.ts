@@ -49,9 +49,11 @@ function getCustomTagsAndColors(): { tags: string[], sidebarTags: string[], cale
     return { tags, sidebarTags, calendarTags, colors };
 }
 
-// Konstanter för Daily Notes
+// Konstanter för Globala mappar
 const DAILY_NOTES_FOLDER_NAME = "Daily-notes";
-const DAILY_NOTES_DISPLAY_NAME = "Daily Notes"; 
+const DAILY_NOTES_DISPLAY_NAME = "Daily Notes";
+const GLOBAL_NOTES_FOLDER_NAME = "Global-notes"; // NY GLOBAL MAPPA
+const GLOBAL_NOTES_DISPLAY_NAME = "Global Notes"; // NYTT VISNINGSNAMN
 
 
 export function activate(context: vscode.ExtensionContext) {
@@ -95,56 +97,96 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }));
 
+    // Definiera ett anpassat interface för våra QuickPick-objekt
+    interface QuickPickNoteItem extends vscode.QuickPickItem {
+        folderName?: string;
+        isGlobal?: boolean;
+    }
 
     context.subscriptions.push(
         vscode.commands.registerCommand('quickNotes.newNote', async () => {
-            const notesFolder = await notesProvider.getNotesFolder(); 
-            if (!notesFolder) { return; } 
+            const notesFolder = await notesProvider.getProjectNotesFolder(); 
+            const globalFolder = notesProvider.getGlobalNotesFolder(); 
 
-            const allFolders = await notesProvider.getFolders(notesFolder);
+            // FIXAT: Hämta undermappar från BÅDA källorna
+            const allProjectFolders = await notesProvider.getFolders(notesFolder);
+            const allGlobalFolders = await notesProvider.getFolders(globalFolder);
 
-            const quickPickItems = [
-                { label: "$(file-directory) Spara i roten ( / )", folderName: undefined }, 
-                // Filtrera bort Daily Notes mappen från snabbvalet för nya anteckningar
-                ...allFolders.filter(f => f !== DAILY_NOTES_FOLDER_NAME).map(f => ({ label: `$(folder) ${f}`, folderName: f }))
+            const quickPickItems: QuickPickNoteItem[] = [
+                // Globala val
+                { label: `$(globe) Spara i Global Notes (Roten)`, folderName: undefined, isGlobal: true }, 
+                ...allGlobalFolders.map(f => ({ 
+                    label: `$(globe) ${f}`, 
+                    folderName: f, 
+                    isGlobal: true 
+                })),
+                { label: '', kind: vscode.QuickPickItemKind.Separator }, 
+                // Projektval
+                { label: "$(file-directory) Spara i Projektmapp (Roten)", folderName: undefined, isGlobal: false }, 
+                ...allProjectFolders
+                    .filter(f => f !== DAILY_NOTES_FOLDER_NAME && f !== GLOBAL_NOTES_FOLDER_NAME)
+                    .map(f => ({ label: `$(folder) ${f}`, folderName: f, isGlobal: false }))
             ];
+            
+            if (!notesFolder) {
+                quickPickItems[quickPickItems.length - 2].description = "Öppna en mapp för att se projektanteckningar";
+                quickPickItems.splice(quickPickItems.length - 1); // Ta bort projektmapparna
+            }
+
 
             const selection = await vscode.window.showQuickPick(quickPickItems, {
-                placeHolder: "Välj en mapp att spara anteckningen i"
+                placeHolder: "Välj en mapp att spara anteckningen i (Global eller Projekt)"
             });
 
             if (!selection) { return; }
-            const selectedFolder = selection.folderName;
-
+            
             const title = await vscode.window.showInputBox({
                 prompt: 'Ange titel för anteckningen',
                 placeHolder: 'Min Anteckning'
             });
             
             if (title) {
-                await notesProvider.createNote(title, false, selectedFolder);
+                const targetBasePath = selection.isGlobal ? globalFolder : notesFolder;
+                await notesProvider.createNote(title, false, selection.folderName, targetBasePath);
             }
         })
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('quickNotes.newTodo', async () => {
-            const notesFolder = await notesProvider.getNotesFolder(); 
-            if (!notesFolder) { return; } 
+            const notesFolder = await notesProvider.getProjectNotesFolder(); 
+            const globalFolder = notesProvider.getGlobalNotesFolder(); 
 
-            const allFolders = await notesProvider.getFolders(notesFolder);
+            // FIXAT: Hämta undermappar från BÅDA källorna
+            const allProjectFolders = await notesProvider.getFolders(notesFolder);
+            const allGlobalFolders = await notesProvider.getFolders(globalFolder);
 
-            const quickPickItems = [
-                { label: "$(file-directory) Spara i roten ( / )", folderName: undefined },
-                ...allFolders.filter(f => f !== DAILY_NOTES_FOLDER_NAME).map(f => ({ label: `$(folder) ${f}`, folderName: f }))
+            const quickPickItems: QuickPickNoteItem[] = [
+                // Globala val
+                { label: `$(globe) Spara i Global Notes (Roten)`, folderName: undefined, isGlobal: true }, 
+                 ...allGlobalFolders.map(f => ({ 
+                    label: `$(globe) ${f}`, 
+                    folderName: f, 
+                    isGlobal: true 
+                })),
+                { label: '', kind: vscode.QuickPickItemKind.Separator }, 
+                // Projektval
+                { label: "$(file-directory) Spara i Projektmapp (Roten)", folderName: undefined, isGlobal: false }, 
+                ...allProjectFolders
+                    .filter(f => f !== DAILY_NOTES_FOLDER_NAME && f !== GLOBAL_NOTES_FOLDER_NAME)
+                    .map(f => ({ label: `$(folder) ${f}`, folderName: f, isGlobal: false }))
             ];
+            
+            if (!notesFolder) {
+                quickPickItems[quickPickItems.length - 2].description = "Öppna en mapp för att se projektanteckningar";
+                quickPickItems.splice(quickPickItems.length - 1); // Ta bort projektmapparna
+            }
 
             const selection = await vscode.window.showQuickPick(quickPickItems, {
-                placeHolder: "Välj en mapp att spara todolistan i"
+                placeHolder: "Välj en mapp att spara TODO-listan i (Global eller Projekt)"
             });
 
             if (!selection) { return; }
-            const selectedFolder = selection.folderName;
 
             const title = await vscode.window.showInputBox({
                 prompt: 'Ange titel för todolistan',
@@ -152,20 +194,48 @@ export function activate(context: vscode.ExtensionContext) {
             });
             
             if (title) {
-                await notesProvider.createNote(title, true, selectedFolder);
+                const targetBasePath = selection.isGlobal ? globalFolder : notesFolder;
+                await notesProvider.createNote(title, true, selection.folderName, targetBasePath);
             }
         })
     );
 
     context.subscriptions.push(
+        // FIXAT: Uppdaterat kommandot för att hantera Global vs Projekt
         vscode.commands.registerCommand('quickNotes.newFolder', async () => {
+            
+            const projectFolder = await notesProvider.getProjectNotesFolder();
+            const globalFolder = notesProvider.getGlobalNotesFolder();
+
+            const quickPickItems: (vscode.QuickPickItem & { basePath: string })[] = [];
+            
+            // Du kan alltid skapa en global mapp
+            quickPickItems.push({ label: `$(globe) Skapa i Global Notes`, basePath: globalFolder });
+            
+            // Du kan bara skapa en projektmapp om ett projekt är öppet
+            if (projectFolder) {
+                quickPickItems.push({ label: `$(file-directory) Skapa i Projektmapp`, basePath: projectFolder });
+            }
+
+            let basePath = globalFolder; // Standard är Global om inget projekt är öppet
+            
+            if (projectFolder) {
+                // Fråga bara om båda alternativen finns
+                const selection = await vscode.window.showQuickPick(quickPickItems, {
+                    placeHolder: "Var vill du skapa den nya mappen?"
+                });
+                if (!selection) { return; }
+                basePath = selection.basePath;
+            }
+
             const folderName = await vscode.window.showInputBox({
-                prompt: 'Enter folder name',
+                prompt: 'Ange mappnamn',
                 placeHolder: 'My Folder'
             });
             
             if (folderName) {
-                await notesProvider.createFolder(folderName);
+                // Anropa createFolder med den valda bassökvägen
+                await notesProvider.createFolder(folderName, basePath); 
             }
         })
     );
@@ -250,7 +320,12 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
     private async sendNotesToWebview() { 
         if (this._view) {
-            const notesData = await this.getNotes(await this.getNotesFolder(), this.getDailyNotesFolder());
+            // UPPDATERAD: Skickar nu med alla tre sökvägarna
+            const notesData = await this.getNotes(
+                await this.getProjectNotesFolder(), 
+                this.getDailyNotesFolder(),
+                this.getGlobalNotesFolder()
+            );
             const tagsAndColors = getCustomTagsAndColors();
             
             this._view.webview.postMessage({ 
@@ -263,10 +338,13 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
     private async sendFoldersToWebview() { 
         if (this._view) {
-            const notesFolder = await this.getNotesFolder();
-            const allFolders = await this.getFolders(notesFolder);
-            // Filtrera bort Daily-notes mappen från move-to-listan om den finns i projektmappen
-            const foldersToSend = allFolders.filter(f => f !== DAILY_NOTES_FOLDER_NAME);
+            // Denna funktion skickar nu bara projektmappar (för "Move to Folder")
+            const projectFolder = await this.getProjectNotesFolder();
+            const projectFolders = await this.getFolders(projectFolder);
+            
+            const foldersToSend = projectFolders.filter(f => 
+                f !== DAILY_NOTES_FOLDER_NAME && f !== GLOBAL_NOTES_FOLDER_NAME
+            );
             
             this._view.webview.postMessage({ type: 'foldersUpdate', folders: foldersToSend });
         }
@@ -311,19 +389,19 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
     private async togglePinNote(filePath: string): Promise<void> {
         const metadata = this.getMetadata(filePath);
         metadata.pinned = !metadata.pinned;
-        // Kollar om anteckningen kommer från en mapp innan den fästs
-        const folder = path.basename(path.dirname(filePath));
-        const notesFolder = await this.getNotesFolder();
         
-        if (notesFolder && path.dirname(filePath) !== notesFolder && folder !== DAILY_NOTES_FOLDER_NAME) {
-            // Om den är i en sub-mapp
-            metadata.folder = folder; 
-        } else if (path.dirname(filePath) === this.getDailyNotesFolder()) {
-            // Om den är i Daily Notes mappen
+        const folder = path.basename(path.dirname(filePath));
+        const projectNotesFolder = await this.getProjectNotesFolder();
+        
+        // Logik för att spara mappnamn
+        if (path.dirname(filePath) === this.getDailyNotesFolder()) {
             metadata.folder = DAILY_NOTES_DISPLAY_NAME;
+        } else if (path.dirname(filePath) === this.getGlobalNotesFolder()) {
+            metadata.folder = GLOBAL_NOTES_DISPLAY_NAME;
+        } else if (projectNotesFolder && path.dirname(filePath) !== projectNotesFolder) {
+            metadata.folder = folder; // Projekt-submapp
         } else {
-             // Om den är i roten eller Daily Notes Root (men inte i Daily Notes submappen)
-            delete metadata.folder;
+             delete metadata.folder; // Rotmapp (antingen projektets rot eller globala roten)
         }
 
         await this.setMetadata(filePath, metadata);
@@ -332,15 +410,17 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
     private async moveNoteToFolder(filePath: string, folderName: string): Promise<void> { 
         try {
-            const notesFolder = await this.getNotesFolder(); 
+            // Flytt kan bara ske inom projektmappen
+            const notesFolder = await this.getProjectNotesFolder(); 
             if (!notesFolder) {
-                vscode.window.showErrorMessage('Cannot move note: no notes folder found.');
+                vscode.window.showErrorMessage('Cannot move note: No active project notes folder.');
                 return;
             }
 
-            // Kontrollera om filen försöker flyttas in eller ut ur Daily Notes
-            if (path.dirname(filePath) === this.getDailyNotesFolder() || folderName === DAILY_NOTES_FOLDER_NAME) {
-                 vscode.window.showErrorMessage('Cannot move notes from/to the Daily Notes system folder.');
+            // Kontrollera om filen är global
+            if (path.dirname(filePath) === this.getDailyNotesFolder() || 
+                path.dirname(filePath) === this.getGlobalNotesFolder()) {
+                 vscode.window.showErrorMessage('Cannot move notes from/to the Global folders.');
                  return;
             }
 
@@ -348,7 +428,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             const fileName = path.basename(filePath);
             
             if (folderName === '') {
-                // Flytta till Roten
+                // Flytta till Projektets Rot
                 const newPath = path.join(notesFolder, fileName);
                 if (filePath !== newPath) {
                     await fsPromises.rename(filePath, newPath);
@@ -358,7 +438,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                     await this.setMetadata(newPath, oldMetadata);
                 }
             } else {
-                // Flytta till en mapp
+                // Flytta till en projektmapp
                 const folderPath = path.join(notesFolder, folderName);
                 await fsPromises.mkdir(folderPath, { recursive: true });
                 
@@ -378,14 +458,17 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    async createFolder(folderName: string): Promise<void> { 
+    // FIXAT: Uppdaterad för att acceptera en bassökväg
+    async createFolder(folderName: string, basePath?: string): Promise<void> { 
         try {
-            const notesFolder = await this.getNotesFolder(); 
+            // Använder basePath om det finns, annars faller tillbaka till projektmappen
+            const notesFolder = basePath || await this.getProjectNotesFolder(); 
             if (!notesFolder) {
-                vscode.window.showErrorMessage('Cannot create folder: no notes folder found.');
+                vscode.window.showErrorMessage('Cannot create folder: no active notes folder.');
                 return;
             }
-            if (folderName === DAILY_NOTES_FOLDER_NAME || folderName === DAILY_NOTES_DISPLAY_NAME) {
+            if (folderName === DAILY_NOTES_FOLDER_NAME || folderName === GLOBAL_NOTES_FOLDER_NAME ||
+                folderName === DAILY_NOTES_DISPLAY_NAME || folderName === GLOBAL_NOTES_DISPLAY_NAME) {
                  vscode.window.showErrorMessage('Cannot create folder with that name as it is reserved.');
                  return;
             }
@@ -399,7 +482,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             if (!folderExists) {
                 await fsPromises.mkdir(folderPath, { recursive: true });
                 vscode.window.showInformationMessage(`Folder '${folderName}' created successfully.`);
-                this.refresh();
+                this.refresh(); // Tvingar uppdatering
             } else {
                 vscode.window.showWarningMessage('Folder already exists!');
             }
@@ -409,7 +492,11 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async getNotes(projectNotesPath: string | undefined, dailyNotesPath: string | undefined): Promise<any> { 
+    private async getNotes(
+        projectNotesPath: string | undefined, 
+        dailyNotesPath: string | undefined,
+        globalNotesPath: string | undefined // NY
+    ): Promise<any> { 
         
         const result: any = {
             pinned: [],
@@ -417,38 +504,48 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             root: []
         };
         const allDeadlines = new Set<string>();
-
         const { calendarTags } = getCustomTagsAndColors();
 
-        // 1. HANTERA DAILY NOTES SOM EN MAPPA
+        // 1. HANTERA DAILY NOTES
         if (dailyNotesPath) {
             const dailyNotes = await this.readNotesFromFolder(dailyNotesPath, allDeadlines, [], calendarTags, DAILY_NOTES_DISPLAY_NAME);
             
-            // Flytta pinnade Daily Notes till den globala 'pinned'-listan
             dailyNotes.pinned.forEach((note: any) => {
                 if (!result.pinned.some((p: any) => p.filePath === note.filePath)) {
                     result.pinned.push(note);
                 }
             });
 
-            // Lägg till Daily Notes i mappar
             if(dailyNotes.root.length > 0) {
                 result.folders[DAILY_NOTES_DISPLAY_NAME] = dailyNotes.root;
             }
         }
 
-        // 2. HANTERA PROJECT/GLOBAL NOTES
+        // 2. HANTERA GLOBALA ANTECKNINGAR
+        if (globalNotesPath) {
+            const globalNotes = await this.readNotesFromFolder(globalNotesPath, allDeadlines, [], calendarTags, GLOBAL_NOTES_DISPLAY_NAME);
+            
+            globalNotes.pinned.forEach((note: any) => {
+                if (!result.pinned.some((p: any) => p.filePath === note.filePath)) {
+                    result.pinned.push(note);
+                }
+            });
+
+            if(globalNotes.root.length > 0) {
+                result.folders[GLOBAL_NOTES_DISPLAY_NAME] = globalNotes.root;
+            }
+        }
+
+        // 3. HANTERA PROJEKTSPECIFIKA ANTECKNINGAR
         if (projectNotesPath) {
             const projectExists = await fsPromises.access(projectNotesPath).then(() => true).catch(() => false);
             if (projectExists) {
-                let exclude: string[] = [];
-                if (path.normalize(projectNotesPath) === path.normalize(path.dirname(dailyNotesPath || ''))) {
-                    exclude = [DAILY_NOTES_FOLDER_NAME];
-                }
+                
+                // Exkludera globala mappar ifall de är kapslade (t.ex. om projektet är `~/Notes`)
+                const exclude = [DAILY_NOTES_FOLDER_NAME, GLOBAL_NOTES_FOLDER_NAME];
                 
                 const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines, exclude, calendarTags);
                 
-                // Flytta de pinnade projektanteckningarna till den globala 'pinned'-listan
                 projectNotes.pinned.forEach((note: any) => {
                     if (!result.pinned.some((p: any) => p.filePath === note.filePath)) {
                         result.pinned.push(note);
@@ -467,7 +564,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         return { ...result, deadlines: Array.from(allDeadlines) };
     }
 
-    // Lade till defaultFolderName för att hantera Daily Notes
+    // Lade till defaultFolderName för att hantera Daily/Global Notes
     private async readNotesFromFolder(notesFolder: string, allDeadlines: Set<string>, excludeFolders: string[] = [], calendarTags: string[] = [], defaultFolderName?: string): Promise<any> { 
         const result: any = {
             pinned: [],
@@ -518,7 +615,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                 const note = { 
                     ...noteData, 
                     pinned: metadata.pinned || false,
-                    // Sätter folder till defaultFolderName (Daily Notes) om det finns, annars undefined
                     folder: defaultFolderName || metadata.folder 
                 }; 
                 
@@ -562,15 +658,13 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                     if (note.pinned) {
                         result.pinned.push(note); // Lägg till i huvudlistan för pinned
                     } else {
-                        // KORRIGERING: Lägger till i mapplistan endast om den INTE är pinnad
                         folderNotes.push(note);
                     }
                 } catch (e) { log(`Could not read file data from ${file} i folder ${folder}: ${e}`); }
             }
             
-            if (folderNotes.length > 0) { 
-                result.folders[folder] = folderNotes;
-            }
+            // FIXAT: Lägger till mappen i listan även om den är tom.
+            result.folders[folder] = folderNotes;
         }
 
         return result;
@@ -644,7 +738,8 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         return todoItems;
     }
 
-    public async getNotesFolder(): Promise<string | undefined> {
+    // ÄNDRAT: Heter nu getProjectNotesFolder och har inte längre en global fallback
+    public async getProjectNotesFolder(): Promise<string | undefined> {
         const config = vscode.workspace.getConfiguration('quickNotes');
         let storageFolder = config.get<string>('notesFolder');
 
@@ -669,17 +764,17 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         }
 
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        let notesRoot: string;
+        // Standardbeteendet är nu BARA projekt-specifikt
         if (workspaceFolder) {
-            notesRoot = path.join(workspaceFolder.uri.fsPath, 'quick-notes');
-        } else {
-            notesRoot = path.join(os.homedir(), 'Notes');
+            const notesRoot = path.join(workspaceFolder.uri.fsPath, 'quick-notes');
+            try {
+                await fsPromises.mkdir(notesRoot, { recursive: true });
+            } catch (error) { log(`Could not create default notes folder: ${error}`); }
+            return notesRoot;
         }
-        
-        try {
-            await fsPromises.mkdir(notesRoot, { recursive: true });
-        } catch (error) { log(`Could not create default notes folder: ${error}`); }
-        return notesRoot;
+
+        // Om ingen mapp är öppen returneras ingenting
+        return undefined;
     }
 
     public getDailyNotesFolder(): string {
@@ -695,10 +790,25 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         return dailyRoot;
     }
 
-
-    async createNote(title: string, isTodoList: boolean, folderName?: string): Promise<void> {
+    // NY FUNKTION: Hämtar den andra globala mappen
+    public getGlobalNotesFolder(): string {
+        const globalRoot = path.join(os.homedir(), 'Notes', GLOBAL_NOTES_FOLDER_NAME);
+        
         try {
-            const notesFolder = await this.getNotesFolder();
+            if (!fs.existsSync(globalRoot)) {
+                fs.mkdirSync(globalRoot, { recursive: true });
+            }
+        } catch (error) {
+            log(`Could not create global notes folder: ${error}`);
+        }
+        return globalRoot;
+    }
+
+
+    async createNote(title: string, isTodoList: boolean, folderName?: string, basePath?: string): Promise<void> {
+        try {
+            // Använder den medskickade bassökvägen (antingen global eller projekt)
+            const notesFolder = basePath || await this.getProjectNotesFolder();
             if (!notesFolder) {
                 vscode.window.showErrorMessage('Cannot create note: no notes folder is configured.');
                 return;
@@ -706,6 +816,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
             await fsPromises.mkdir(notesFolder, { recursive: true });
 
+            // Om folderName är definierat (t.ex. en submapp)
             const targetFolder = folderName ? path.join(notesFolder, folderName) : notesFolder;
             if (folderName) {
                 await fsPromises.mkdir(targetFolder, { recursive: true });
@@ -732,7 +843,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
                 await fsPromises.writeFile(filePath, content, 'utf-8');
                 
-                // Endast om filen skapas i en submapp (inte roten) ska metadata sättas
                 if (folderName) {
                     const metadata: NoteMetadata = { folder: folderName };
                     await this.setMetadata(filePath, metadata);
@@ -742,8 +852,10 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             }
             
             const doc = await vscode.workspace.openTextDocument(filePath);
-            // KORRIGERING: Öppnar i en ny flik i befintlig kolumn (utan 'Beside')
             await vscode.window.showTextDocument(doc, { preview: false }); 
+
+            // FIXAT: Tvinga en uppdatering av sidofältet (eftersom fileWatcher missar globala filer)
+            this.refresh();
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to create note: ${error instanceof Error ? error.message : 'Unknown error'}`);
             log('Create note error:', error);
@@ -752,10 +864,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
     async createNoteFromDate(dateString: string): Promise<void> {
         try {
-            // dateString är nu i formatet YYYY-MM-DD
-            const date = new Date(dateString + 'T00:00:00'); // Tolkas i lokal tidszon
-            
-            // KORRIGERING: Ändrar titeln till "Daily note"
+            const date = new Date(dateString + 'T00:00:00'); 
             const title = `Daily note ${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
             
             const dailyNotesFolder = this.getDailyNotesFolder();
@@ -778,8 +887,10 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             }
             
             const doc = await vscode.workspace.openTextDocument(filePath);
-            // KORRIGERING: Öppnar i en ny flik i befintlig kolumn (utan 'Beside')
             await vscode.window.showTextDocument(doc, { preview: false }); 
+
+            // FIXAT: Tvinga en uppdatering av sidofältet (eftersom fileWatcher missar globala filer)
+            this.refresh();
         } catch (error) {
             vscode.window.showErrorMessage(`Failed to create daily note: ${error instanceof Error ? error.message : 'Unknown error'}`);
             log('Create daily note error:', error);
@@ -787,7 +898,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
     }
 
     private openNote(filePath: string) {
-        // KORRIGERING: Öppnar i en ny flik i befintlig kolumn (utan 'Beside')
         vscode.window.showTextDocument(vscode.Uri.file(filePath), { preview: false });
     }
 
@@ -1347,10 +1457,12 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                             foldersHeader.textContent = 'Folders';
                             container.appendChild(foldersHeader);
 
-                            // KORRIGERING: Sorterar mappar, men Daily Notes ska ALLTID vara först.
+                            // KORRIGERING: Sorterar mappar, men Daily Notes och Global Notes ska ALLTID vara först.
                             const folderNames = Object.keys(currentNotes.folders).sort((a, b) => {
                                 if (a === 'Daily Notes') return -1; // Daily Notes först
                                 if (b === 'Daily Notes') return 1;
+                                if (a === 'Global Notes') return -1; // Global Notes näst först
+                                if (b === 'Global Notes') return 1;
                                 return a.localeCompare(b); // Annars alfabetiskt
                             });
 
@@ -1368,7 +1480,13 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                                 const icon = document.createElement('span');
                                 icon.className = 'folder-icon';
                                 // Ikoner anpassade efter mappen
-                                icon.textContent = folderName === 'Daily Notes' ? '📅' : '📁'; 
+                                if (folderName === 'Daily Notes') {
+                                    icon.textContent = '📅';
+                                } else if (folderName === 'Global Notes') {
+                                    icon.textContent = '🌍'; // Glob-ikon
+                                } else {
+                                    icon.textContent = '📁'; 
+                                }
 
                                 const name = document.createElement('span');
                                 name.className = 'folder-name';
@@ -1403,11 +1521,11 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                             });
                         }
 
-                        // 3. ROOT NOTES
+                        // 3. ROOT NOTES (Dessa är nu bara Projektets rotfiler)
                         if (currentNotes.root.length > 0) {
                             const notesHeader = document.createElement('div');
                             notesHeader.className = 'section-header';
-                            notesHeader.textContent = 'Root Notes'; 
+                            notesHeader.textContent = 'Project Root Notes'; 
                             container.appendChild(notesHeader);
 
                             currentNotes.root.forEach(note => {
@@ -1420,15 +1538,12 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                     function createNoteElement(note, isPinned, folderName) { 
                         const noteDiv = document.createElement('div');
                         
-                        // KORRIGERING: Fastställer klassen baserat på plats (Daily Notes är nu en vanlig mapp igen)
-                        if (folderName && folderName !== 'Daily Notes') {
-                            // Fil inuti en vanlig mapp
+                        // KORRIGERING: Fastställer klassen baserat på plats (Globala mappar är vanliga mappar)
+                        if (folderName) {
+                            // Fil inuti en mapp (Daily, Global, eller Projektmapp)
                              noteDiv.className = 'note-item folder-content-item'; 
-                        } else if (folderName === 'Daily Notes') {
-                            // Fil inuti Daily Notes mapp
-                             noteDiv.className = 'note-item folder-content-item daily-note-item';
                         } else {
-                            // Rotfil
+                            // Rotfil (Projektets rot)
                              noteDiv.className = 'note-item root-content-item';
                         }
 
@@ -1614,10 +1729,10 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                         
                         // Move to Root
                         // Visa endast om anteckningen INTE är i roten och INTE är i Daily Notes mappen
-                        if (note.folder && note.folder !== 'Daily Notes') { 
+                        if (note.folder && note.folder !== 'Daily Notes' && note.folder !== 'Global Notes') { 
                             const moveToRootItem = document.createElement('div');
                             moveToRootItem.className = 'context-menu-item';
-                            moveToRootItem.textContent = '📂 Move to Root ( / )';
+                            moveToRootItem.textContent = '📂 Move to Project Root ( / )';
                             moveToRootItem.onclick = () => {
                                 vscode.postMessage({
                                     type: 'moveToFolder',
@@ -1634,10 +1749,10 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                         // Kan inte flytta till eller från Daily Notes
                         const foldersToMoveTo = availableFolders.filter(folder => folder !== note.folder);
 
-                        if (foldersToMoveTo.length > 0 && note.folder !== 'Daily Notes') {
+                        if (foldersToMoveTo.length > 0 && note.folder !== 'Daily Notes' && note.folder !== 'Global Notes') {
                             const moveHeader = document.createElement('div');
                             moveHeader.className = 'context-menu-item';
-                            moveHeader.textContent = '— Move to Folder —';
+                            moveHeader.textContent = '— Move to Project Folder —';
                             moveHeader.style.fontWeight = 'bold';
                             moveHeader.style.opacity = '0.7';
                             moveHeader.style.cursor = 'default';
