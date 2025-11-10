@@ -1,9 +1,9 @@
 # Disclaimer
 
-Är första gången jag gör något liknande och koden är kaos, felsökt med AI och inte haft full koll på alla rader kod. 
-Tanken är att lägga in saker efter behov, för att sen komma med en större uppdatering där jag har renskrivit koden och tagit bort alla upprepningar 😐.
+Är första gången jag gör något liknande och koden är kaos, felsökt med AI och inte haft full koll på alla rader kod. Tanken är att lägga in mindre saker efter behov, för att sen komma med en större uppdatering där jag har renskrivit koden och strukturerat upp den som sig bör. 
 
-## Känt problem
+
+## Känt problem 
 
 Programmet startar direkt med VS, vilket gör att det går lite segt i början. Kommer att fixa det i framtiden, så att programmet startar upp när du vill använda det istället.
 
