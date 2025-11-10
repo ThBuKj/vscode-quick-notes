@@ -21,6 +21,13 @@
     "organizer"
   ],
   "main": "./out/extension.js",
+  "activationEvents": [
+    "onView:quickNotesView",
+    "onCommand:quickNotes.newNote",
+    "onCommand:quickNotes.newTodo",
+    "onCommand:quickNotes.newFolder",
+    "onCommand:quickNotes.refresh"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -36,7 +43,8 @@
         {
           "id": "quickNotesView",
           "name": "Notes & Todos",
-          "type": "webview"
+          "type": "webview",
+          "icon": "$(notebook)"
         }
       ]
     },

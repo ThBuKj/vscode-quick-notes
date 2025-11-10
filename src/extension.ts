@@ -1232,7 +1232,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                         vscode.postMessage({
                             type: 'deleteNote',
                             filePath: note.filePath,
-                            title: note.title
+                            title: note.titlequick note todo
                         });
                     };
                     
