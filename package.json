@@ -10,11 +10,15 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onStartupFinished",
-    "onCommand:quickNotes.newNote",
-    "onCommand:quickNotes.newTodo",
-    "onCommand:quickNotes.newFolder"
+  "keywords": [
+    "notes",
+    "todo",
+    "markdown",
+    "productivity",
+    "calendar",
+    "notebook",
+    "task",
+    "organizer"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -39,22 +43,22 @@
     "commands": [
       {
         "command": "quickNotes.newNote",
-        "title": "New Note",
+        "title": "Quick Notes: New Note",
         "icon": "$(add)"
       },
       {
         "command": "quickNotes.newTodo",
-        "title": "New Todo List",
+        "title": "Quick Notes: New Todo List",
         "icon": "$(checklist)"
       },
       {
         "command": "quickNotes.refresh",
-        "title": "Refresh Notes",
+        "title": "Quick Notes: Refresh Notes",
         "icon": "$(refresh)"
       },
       {
         "command": "quickNotes.newFolder",
-        "title": "New Folder",
+        "title": "Quick Notes: New Folder",
         "icon": "$(new-folder)"
       }
     ],
@@ -78,7 +82,7 @@
         {
           "command": "quickNotes.newFolder",
           "when": "view == quickNotesView",
-          "group": "navigation@3"
+          "group": "navigation@4"
         }
       ]
     },
