@@ -1,3 +1,0 @@
-# hejhej
-
-Write your notes here...

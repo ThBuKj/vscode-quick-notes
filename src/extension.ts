@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs'; // Vi behåller 'fs' för 'existsSync'
-import * as fsPromises from 'fs/promises'; // --- NY --- Importerar Asynkrona versioner
+import * as fs from 'fs'; 
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os'; 
 
 let notesProvider: NotesViewProvider;
-const DEBUG = false; // Sätt till true för att se loggar i konsolen
+const DEBUG = false;
 
 function log(message: string, ...args: any[]) {
     if (DEBUG) {
@@ -13,9 +13,41 @@ function log(message: string, ...args: any[]) {
     }
 }
 
-// --- FIX --- Konstanter för att undvika sträng-buggar
+// Global funktion för att läsa inställningar
+function getSettings() {
+    return vscode.workspace.getConfiguration('quickNotes');
+}
+
+// Funktion för att hämta dynamiska taggar och färger
+function getCustomTagsAndColors(): { tags: string[], calendarTags: string[], colors: { [tag: string]: string } } {
+    const settings = getSettings();
+    const customTagsConfig = settings.get<any>('customTags') || {};
+    
+    const tags: string[] = []; 
+    const calendarTags: string[] = []; 
+    const colors: { [tag: string]: string } = {};
+
+    for (const key in customTagsConfig) {
+        if (customTagsConfig.hasOwnProperty(key)) {
+            const tagName = key.toUpperCase(); 
+            const config = customTagsConfig[key];
+
+            tags.push(tagName);
+            colors[tagName] = config.color || '#FFFFFF';
+            
+            if (config.appliesToCalendar === true) {
+                calendarTags.push(tagName);
+            }
+        }
+    }
+
+    return { tags, calendarTags, colors };
+}
+
+// Konstanter för Daily Notes
 const DAILY_NOTES_FOLDER_NAME = "Daily-notes";
 const DAILY_NOTES_DISPLAY_NAME = "Daily Notes (Global)";
+
 
 export function activate(context: vscode.ExtensionContext) {
     log('Quick Notes extension is now active');
@@ -51,8 +83,9 @@ export function activate(context: vscode.ExtensionContext) {
         notesProvider.refresh();
     }));
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('quickNotes.notesFolder')) {
-            log("Setting 'notesFolder' changed. Updating...");
+        if (e.affectsConfiguration('quickNotes.notesFolder') || 
+            e.affectsConfiguration('quickNotes.customTags')) {
+            log("Settings changed. Updating...");
             notesProvider.refresh();
         }
     }));
@@ -60,7 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('quickNotes.newNote', async () => {
-            const notesFolder = await notesProvider.getNotesFolder(); // --- FIX --- (await)
+            const notesFolder = await notesProvider.getNotesFolder(); 
             if (!notesFolder) { return; } 
 
             const allFolders = await notesProvider.getFolders(notesFolder);
@@ -90,7 +123,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('quickNotes.newTodo', async () => {
-            const notesFolder = await notesProvider.getNotesFolder(); // --- FIX --- (await)
+            const notesFolder = await notesProvider.getNotesFolder(); 
             if (!notesFolder) { return; } 
 
             const allFolders = await notesProvider.getFolders(notesFolder);
@@ -166,7 +199,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
-        // --- FIX --- (Korrekt kommando för att uppdatera när panelen syns)
         webviewView.onDidChangeVisibility(() => {
             if (webviewView.visible) {
                 log("Panel became visible, updating.");
@@ -206,31 +238,36 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         this.sendNotesToWebview();
     }
 
-    public async refresh() { // --- FIX --- (async)
+    public async refresh() { 
         await this.sendNotesToWebview();
     }
 
-    private async sendNotesToWebview() { // --- FIX --- (async)
+    private async sendNotesToWebview() { 
         if (this._view) {
-            const notesData = await this.getNotes(await this.getNotesFolder(), await this.getDailyNotesFolder());
-            this._view.webview.postMessage({ type: 'notesUpdate', notesData: notesData });
+            const notesData = await this.getNotes(await this.getNotesFolder(), this.getDailyNotesFolder());
+            const tagsAndColors = getCustomTagsAndColors();
+            
+            this._view.webview.postMessage({ 
+                type: 'notesUpdate', 
+                notesData: notesData,
+                tagColors: tagsAndColors.colors
+            });
         }
     }
 
-    private async sendFoldersToWebview() { // --- FIX --- (async)
+    private async sendFoldersToWebview() { 
         if (this._view) {
             const folders = await this.getFolders(await this.getNotesFolder());
             this._view.webview.postMessage({ type: 'foldersUpdate', folders });
         }
     }
 
-    public async getFolders(notesFolder: string | undefined): Promise<string[]> { // --- FIX --- (async)
+    public async getFolders(notesFolder: string | undefined): Promise<string[]> {
         if (!notesFolder) {
             return [];
         }
 
         try {
-            // Kontrollera om mappen finns FÖRST
             await fsPromises.access(notesFolder); 
             const items = await fsPromises.readdir(notesFolder);
             const folders: string[] = [];
@@ -268,7 +305,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         this.refresh();
     }
 
-    private async moveNoteToFolder(filePath: string, folderName: string): Promise<void> { // --- FIX --- (async)
+    private async moveNoteToFolder(filePath: string, folderName: string): Promise<void> { 
         try {
             const notesFolder = await this.getNotesFolder(); 
             if (!notesFolder) {
@@ -289,9 +326,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                 }
             } else {
                 const folderPath = path.join(notesFolder, folderName);
-                if (!fs.existsSync(folderPath)) {
-                    await fsPromises.mkdir(folderPath, { recursive: true });
-                }
+                await fsPromises.mkdir(folderPath, { recursive: true });
                 
                 const newPath = path.join(folderPath, fileName);
                 if (filePath !== newPath) {
@@ -309,7 +344,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    async createFolder(folderName: string): Promise<void> { // --- FIX --- (async)
+    async createFolder(folderName: string): Promise<void> { 
         try {
             const notesFolder = await this.getNotesFolder(); 
             if (!notesFolder) {
@@ -317,13 +352,15 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                 return;
             }
 
-            if (!fs.existsSync(notesFolder)) {
-                await fsPromises.mkdir(notesFolder, { recursive: true });
-            }
+            await fsPromises.mkdir(notesFolder, { recursive: true });
 
             const folderPath = path.join(notesFolder, folderName);
-            if (!fs.existsSync(folderPath)) {
+            let folderExists = true;
+            try { await fsPromises.access(folderPath); } catch { folderExists = false; }
+            
+            if (!folderExists) {
                 await fsPromises.mkdir(folderPath, { recursive: true });
+                vscode.window.showInformationMessage(`Folder '${folderName}' created successfully.`);
             } else {
                 vscode.window.showWarningMessage('Folder already exists!');
             }
@@ -333,7 +370,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async getNotes(projectNotesPath: string | undefined, dailyNotesPath: string | undefined): Promise<any> { // --- FIX --- (async)
+    private async getNotes(projectNotesPath: string | undefined, dailyNotesPath: string | undefined): Promise<any> { 
         
         const result: any = {
             pinned: [],
@@ -342,8 +379,10 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         };
         const allDeadlines = new Set<string>();
 
-        if (dailyNotesPath && fs.existsSync(dailyNotesPath)) {
-            const dailyNotes = await this.readNotesFromFolder(dailyNotesPath, allDeadlines);
+        const { calendarTags } = getCustomTagsAndColors();
+
+        if (dailyNotesPath) {
+            const dailyNotes = await this.readNotesFromFolder(dailyNotesPath, allDeadlines, [], calendarTags);
             if(dailyNotes.root.length > 0 || Object.keys(dailyNotes.folders).length > 0) {
                 let allDailyNotes = [...dailyNotes.root];
                 Object.values(dailyNotes.folders).forEach(folderContent => {
@@ -354,20 +393,23 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             }
         }
 
-        if (projectNotesPath && fs.existsSync(projectNotesPath)) {
-            if (dailyNotesPath && projectNotesPath === path.dirname(dailyNotesPath)) {
-                const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines, [DAILY_NOTES_FOLDER_NAME]);
-                result.pinned.push(...projectNotes.pinned);
-                result.root.push(...projectNotes.root);
-                for (const folderName in projectNotes.folders) {
-                    result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
-                }
-            } else {
-                const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines);
-                result.pinned.push(...projectNotes.pinned);
-                result.root.push(...projectNotes.root);
-                for (const folderName in projectNotes.folders) {
-                    result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+        if (projectNotesPath) {
+            const projectExists = await fsPromises.access(projectNotesPath).then(() => true).catch(() => false);
+            if (projectExists) {
+                if (dailyNotesPath && projectNotesPath === path.dirname(dailyNotesPath)) {
+                    const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines, [DAILY_NOTES_FOLDER_NAME], calendarTags);
+                    result.pinned.push(...projectNotes.pinned);
+                    result.root.push(...projectNotes.root);
+                    for (const folderName in projectNotes.folders) {
+                        result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+                    }
+                } else {
+                    const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines, [], calendarTags);
+                    result.pinned.push(...projectNotes.pinned);
+                    result.root.push(...projectNotes.root);
+                    for (const folderName in projectNotes.folders) {
+                        result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+                    }
                 }
             }
         }
@@ -376,7 +418,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         return { ...result, deadlines: Array.from(allDeadlines) };
     }
 
-    private async readNotesFromFolder(notesFolder: string, allDeadlines: Set<string>, excludeFolders: string[] = []): Promise<any> { // --- FIX --- (async)
+    private async readNotesFromFolder(notesFolder: string, allDeadlines: Set<string>, excludeFolders: string[] = [], calendarTags: string[] = []): Promise<any> { 
         const result: any = {
             pinned: [],
             folders: {} as { [key: string]: any[] },
@@ -418,7 +460,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
         for (const { file } of rootFilesWithStats) {
             try {
-                const noteData = await this.getNoteData(notesFolder, file);
+                const noteData = await this.getNoteData(notesFolder, file, calendarTags);
                 noteData.deadlines.forEach((d: string) => allDeadlines.add(d)); 
                 const metadata = this.getMetadata(noteData.filePath);
                 
@@ -452,7 +494,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             const folderNotes = [];
             for (const file of folderFiles) {
                 try {
-                    const noteData = await this.getNoteData(folderPath, file);
+                    const noteData = await this.getNoteData(folderPath, file, calendarTags);
                     noteData.deadlines.forEach((d: string) => allDeadlines.add(d)); 
                     const metadata = this.getMetadata(noteData.filePath);
                     folderNotes.push({ ...noteData, folder: folder, pinned: metadata.pinned || false });
@@ -465,7 +507,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         return result;
     }
 
-    private async getNoteData(folderPath: string, file: string): Promise<any> { // --- FIX --- (async)
+    private async getNoteData(folderPath: string, file: string, calendarTags: string[] = []): Promise<any> { 
         const filePath = path.join(folderPath, file);
         const content = await fsPromises.readFile(filePath, 'utf-8');
         const isTodoList = content.includes('- [ ]') || content.includes('- [x]');
@@ -473,25 +515,43 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
 
         const todos = isTodoList ? await this.getTodoItems(filePath) : [];
 
-        const deadlineRegex = /#DEADLINE\s*\(\s*(\d{4}-\d{2}-\d{2})\s*\)/gi;
-        const deadlines: string[] = [];
-        let match;
+        const tagsConfig = getCustomTagsAndColors();
+        const allTags = tagsConfig.tags;
         
-        while ((match = deadlineRegex.exec(content)) !== null) {
-            log(`Found deadline: ${match[1]} in file ${file}`);
-            deadlines.push(match[1]);
+        const tagRegex = new RegExp(`#(${allTags.join('|')})\\b`, 'gi'); 
+        
+        const calendarTagRegex = new RegExp(`#(${calendarTags.join('|')})\\s*\\(\\s*(\\d{4}-\\d{2}-\\d{2})\\s*\\)`, 'gi');
+
+        const foundTags: { tag: string; color: string }[] = [];
+        const deadlines: string[] = [];
+
+        let tagMatch;
+        while ((tagMatch = tagRegex.exec(content)) !== null) {
+            const tag = tagMatch[1].toUpperCase();
+            if (!foundTags.some(t => t.tag === tag)) {
+                foundTags.push({ 
+                    tag: tag, 
+                    color: tagsConfig.colors[tag] || '#FFFFFF'
+                });
+            }
         }
 
+        let deadlineMatch;
+        while ((deadlineMatch = calendarTagRegex.exec(content)) !== null) {
+            deadlines.push(deadlineMatch[2]); 
+        }
+        
         return {
             title: fileName,
             filePath: filePath,
             isTodoList: isTodoList,
             todos: todos,
-            deadlines: deadlines 
+            deadlines: deadlines,
+            activeTags: foundTags
         };
     }
 
-    private async getTodoItems(filePath: string): Promise<any[]> { // --- FIX --- (async)
+    private async getTodoItems(filePath: string): Promise<any[]> {
         const content = await fsPromises.readFile(filePath, 'utf-8');
         const lines = content.split('\n');
         const todoItems: any[] = [];
@@ -513,7 +573,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         return todoItems;
     }
 
-    public async getNotesFolder(): Promise<string | undefined> { // --- FIX --- (async)
+    public async getNotesFolder(): Promise<string | undefined> {
         const config = vscode.workspace.getConfiguration('quickNotes');
         let storageFolder = config.get<string>('notesFolder');
 
@@ -524,9 +584,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             if (path.isAbsolute(storageFolder)) {
                 try {
                     await fsPromises.mkdir(storageFolder, { recursive: true });
-                } catch (error) {
-                    log(`Could not create notes folder: ${error}`);
-                }
+                } catch (error) { log(`Could not create notes folder: ${error}`); }
                 return storageFolder;
             }
             const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -534,9 +592,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                 const projectNotesPath = path.join(workspaceFolder.uri.fsPath, storageFolder);
                 try {
                     await fsPromises.mkdir(projectNotesPath, { recursive: true });
-                } catch (error) {
-                    log(`Could not create project notes folder: ${error}`);
-                }
+                } catch (error) { log(`Could not create project notes folder: ${error}`); }
                 return projectNotesPath;
             }
         }
@@ -551,13 +607,11 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         
         try {
             await fsPromises.mkdir(notesRoot, { recursive: true });
-        } catch (error) {
-            log(`Could not create default notes folder: ${error}`);
-        }
+        } catch (error) { log(`Could not create default notes folder: ${error}`); }
         return notesRoot;
     }
 
-    public getDailyNotesFolder(): string { // Denna kan vara sync, den är snabb
+    public getDailyNotesFolder(): string {
         const dailyRoot = path.join(os.homedir(), 'Notes', DAILY_NOTES_FOLDER_NAME);
         
         try {
@@ -571,7 +625,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
     }
 
 
-    async createNote(title: string, isTodoList: boolean, folderName?: string): Promise<void> { // --- FIX --- (async)
+    async createNote(title: string, isTodoList: boolean, folderName?: string): Promise<void> {
         try {
             const notesFolder = await this.getNotesFolder();
             if (!notesFolder) {
@@ -579,7 +633,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                 return;
             }
 
-            // Måste inte 'awaita' denna, men det skadar inte
             await fsPromises.mkdir(notesFolder, { recursive: true });
 
             const targetFolder = folderName ? path.join(notesFolder, folderName) : notesFolder;
@@ -590,7 +643,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
             const fileName = `${title}.md`;
             const filePath = path.join(targetFolder, fileName);
 
-            // Använd 'access' för att kolla om filen finns (async)
             let fileExists = true;
             try {
                 await fsPromises.access(filePath);
@@ -625,14 +677,14 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    async createNoteFromDate(dateString: string): Promise<void> { // --- FIX --- (async)
+    async createNoteFromDate(dateString: string): Promise<void> {
         try {
             const date = new Date(dateString);
             const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
             
             const title = `Note ${localDate.toISOString().split('T')[0]}`;
             
-            const dailyNotesFolder = this.getDailyNotesFolder(); // Denna är sync
+            const dailyNotesFolder = this.getDailyNotesFolder();
             const filePath = path.join(dailyNotesFolder, `${title}.md`);
 
             let fileExists = true;
@@ -663,7 +715,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         vscode.window.showTextDocument(vscode.Uri.file(filePath));
     }
 
-    private async deleteNote(filePath: string, title: string) { // --- FIX --- (async)
+    private async deleteNote(filePath: string, title: string) {
         const confirm = await vscode.window.showWarningMessage(
             `Delete "${title}"?`,
             'Yes',
@@ -682,7 +734,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async toggleTodo(filePath: string, lineNumber: number) { // --- FIX --- (async)
+    private async toggleTodo(filePath: string, lineNumber: number) {
         try {
             const content = await fsPromises.readFile(filePath, 'utf-8');
             const lines = content.split('\n');
@@ -705,7 +757,6 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
-        // --- NY/ÄNDRAD --- (Lade till 'collapseState' och bytte engelska i JS)
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
@@ -812,6 +863,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                     display: flex;
                     justify-content: space-between;
                     align-items: center;
+                    gap: 6px;
                 }
                 
                 .note-title {
@@ -820,6 +872,22 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                     align-items: center;
                     gap: 6px;
                     flex: 1;
+                }
+                
+                .note-tags {
+                    display: flex;
+                    gap: 4px;
+                    flex-wrap: wrap;
+                }
+                
+                .note-tag {
+                    font-size: 10px;
+                    font-weight: bold;
+                    padding: 1px 4px;
+                    border-radius: 3px;
+                    background-color: var(--vscode-editorGroupHeader-tabsBackground);
+                    color: var(--vscode-editor-foreground);
+                    opacity: 0.8;
                 }
                 
                 .note-actions {
@@ -1108,10 +1176,9 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                     let contextMenuTarget = null;
                     let availableFolders = [];
                     
-                    // --- NY/ÄNDRAD --- (Minnet för att spara mapp-lägen)
                     let collapseState = {};
+                    let currentTagColors = {}; 
 
-                    // Request initial notes
                     vscode.postMessage({ type: 'requestNotes' });
                     vscode.postMessage({ type: 'getFolders' });
 
@@ -1121,6 +1188,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                             const notesData = message.notesData; 
                             currentNotes = notesData; 
                             deadlineDates = notesData.deadlines || []; 
+                            currentTagColors = message.tagColors || {};
                             
                             renderNotes();
                             renderCalendar();
@@ -1128,6 +1196,22 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                             availableFolders = message.folders;
                         }
                     });
+
+                    function isColorDark(hexColor) {
+                        if (!hexColor) return false;
+                        hexColor = hexColor.replace('#', '');
+                        if (hexColor.length === 3) {
+                            hexColor = hexColor.split('').map(char => char + char).join('');
+                        }
+                        if (hexColor.length === 8) {
+                            hexColor = hexColor.substring(0, 6);
+                        }
+                        const r = parseInt(hexColor.substring(0, 2), 16);
+                        const g = parseInt(hexColor.substring(2, 4), 16);
+                        const b = parseInt(hexColor.substring(4, 6), 16);
+                        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+                        return brightness < 150;
+                    };
 
                     function renderNotes() {
                         const container = document.getElementById('notes-container');
@@ -1189,18 +1273,16 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                                 const folderContents = document.createElement('div');
                                 folderContents.className = 'folder-contents';
                                 
-                                // --- NY/ÄNDRAD --- (Läser från minnet)
                                 if (collapseState[folderName] === 'collapsed') {
                                     arrow.classList.add('collapsed');
                                     folderContents.classList.add('collapsed');
                                 }
 
                                 currentNotes.folders[folderName].forEach(note => {
-                                    folderContents.appendChild(createNoteElement(note, note.pinned));
+                                    container.appendChild(createNoteElement(note, note.pinned));
                                 });
 
                                 folderHeaderDiv.onclick = () => {
-                                    // --- NY/ÄNDRAD --- (Spara till minnet)
                                     const isCollapsed = arrow.classList.toggle('collapsed');
                                     folderContents.classList.toggle('collapsed');
                                     collapseState[folderName] = isCollapsed ? 'collapsed' : 'expanded';
@@ -1268,6 +1350,22 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                                 });
                             }
                         };
+                        
+                        const tagContainer = document.createElement('div');
+                        tagContainer.className = 'note-tags';
+                        
+                        if (note.activeTags && note.activeTags.length > 0) {
+                            note.activeTags.forEach(tagInfo => {
+                                const tagSpan = document.createElement('span');
+                                tagSpan.className = 'note-tag';
+                                tagSpan.textContent = \`#\${tagInfo.tag}\`;
+                                tagSpan.style.backgroundColor = tagInfo.color;
+                                if (isColorDark(tagInfo.color)) {
+                                    tagSpan.style.color = '#FFFFFF'; 
+                                }
+                                tagContainer.appendChild(tagSpan);
+                            });
+                        }
 
                         noteDiv.oncontextmenu = (e) => {
                             e.preventDefault();
@@ -1305,6 +1403,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                         actionsDiv.appendChild(deleteBtn);
                         
                         headerDiv.appendChild(titleDiv);
+                        headerDiv.appendChild(tagContainer);
                         headerDiv.appendChild(actionsDiv);
                         noteDiv.appendChild(headerDiv);
                         
@@ -1371,34 +1470,47 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                         
                         const moveToRootItem = document.createElement('div');
                         moveToRootItem.className = 'context-menu-item';
-                        moveToRootItem.textContent = '📂 Move to Root';
-                        moveToRootItem.onclick = () => {
-                            vscode.postMessage({
-                                type: 'moveToFolder',
-                                filePath: note.filePath,
-                                folderName: ''
-                            });
-                            hideContextMenu();
-                        };
-                        menu.appendChild(moveToRootItem);
-                        
-                        if (availableFolders.length > 0) {
-                            availableFolders.forEach(folder => {
-                                const folderItem = document.createElement('div');
-                                folderItem.className = 'context-menu-item';
-                                folderItem.textContent = '📁 Move to ' + folder;
-                                folderItem.onclick = () => {
+                            if (note.folder) {
+                                moveToRootItem.textContent = '📂 Move to Root';
+                                moveToRootItem.onclick = () => {
                                     vscode.postMessage({
                                         type: 'moveToFolder',
                                         filePath: note.filePath,
-                                        folderName: folder
+                                        folderName: ''
                                     });
                                     hideContextMenu();
                                 };
-                                menu.appendChild(folderItem);
-                            });
-                        }
-                        
+                                menu.appendChild(moveToRootItem);
+                            } else {
+                            }
+                            
+                            if (availableFolders.length > 0) {
+                                const moveHeader = document.createElement('div');
+                                moveHeader.className = 'context-menu-item';
+                                moveHeader.textContent = '— Move to Folder —';
+                                moveHeader.style.fontWeight = 'bold';
+                                moveHeader.style.opacity = '0.7';
+                                menu.appendChild(moveHeader);
+
+                                availableFolders.forEach(folder => {
+                                    if (folder !== note.folder) {
+                                        const folderItem = document.createElement('div');
+                                        folderItem.className = 'context-menu-item';
+                                        folderItem.textContent = '📁 ' + folder;
+                                        folderItem.onclick = () => {
+                                            vscode.postMessage({
+                                                type: 'moveToFolder',
+                                                filePath: note.filePath,
+                                                folderName: folder
+                                            });
+                                            hideContextMenu();
+                                        };
+                                        menu.appendChild(folderItem);
+                                    }
+                                });
+                            }
+
+
                         menu.style.display = 'block';
                         menu.style.left = event.pageX + 'px';
                         menu.style.top = event.pageY + 'px';
@@ -1519,7 +1631,7 @@ class NotesViewProvider implements vscode.WebviewViewProvider {
                     };
                     
                     renderCalendar();
-                }()); // --- NY/ÄNDRAD --- (Avslutar IIFE)
+                }());
             </script>
         </body>
         </html>`;

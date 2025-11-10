@@ -2,7 +2,7 @@
   "name": "quick-notes-extension",
   "displayName": "Quick Notes & Todos",
   "description": "Quick and simple notes and todo lists in VS Code with calendar",
-  "version": "1.2.0",
+  "version": "1.1.0",
   "publisher": "ThBuKj",
   "engines": {
     "vscode": "^1.75.0"
@@ -101,6 +101,36 @@
           "type": "string",
           "default": "",
           "description": "Root folder for notes. Leave empty for smart default (uses 'quick-notes' in the project folder if one exists, otherwise '~/Notes' globally)."
+        },
+        "quickNotes.customTags": {
+          "type": "object",
+          "description": "Define custom tags to be searched for in your notes (e.g., #TODO, #BUG). For deadlines, use the date format: #TAG(YYYY-MM-DD).",
+          "default": {
+            "DEADLINE": {
+              "color": "#FF0000",
+              "appliesToCalendar": true
+            },
+            "TODO": {
+              "color": "#FFD700"
+            },
+            "BUG": {
+              "color": "#8B0000"
+            }
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "color": {
+                "type": "string",
+                "description": "CSS color for the tag (e.g., '#FF0000' or 'orange')."
+              },
+              "appliesToCalendar": {
+                "type": "boolean",
+                "description": "If true, this tag's date will mark the calendar. Only works if tag is followed by (YYYY-MM-DD).",
+                "default": false
+              }
+            }
+          }
         }
       }
     },

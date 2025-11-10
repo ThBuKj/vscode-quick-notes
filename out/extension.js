@@ -36,18 +36,42 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
-const fs = __importStar(require("fs")); // Vi behåller 'fs' för 'existsSync'
-const fsPromises = __importStar(require("fs/promises")); // --- NY --- Importerar Asynkrona versioner
+const fs = __importStar(require("fs"));
+const fsPromises = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
 const os = __importStar(require("os"));
 let notesProvider;
-const DEBUG = false; // Sätt till true för att se loggar i konsolen
+const DEBUG = false;
 function log(message, ...args) {
     if (DEBUG) {
         console.log(`[QuickNotes] ${message}`, ...args);
     }
 }
-// --- FIX --- Konstanter för att undvika sträng-buggar
+// Global funktion för att läsa inställningar
+function getSettings() {
+    return vscode.workspace.getConfiguration('quickNotes');
+}
+// Funktion för att hämta dynamiska taggar och färger
+function getCustomTagsAndColors() {
+    const settings = getSettings();
+    const customTagsConfig = settings.get('customTags') || {};
+    const tags = [];
+    const calendarTags = [];
+    const colors = {};
+    for (const key in customTagsConfig) {
+        if (customTagsConfig.hasOwnProperty(key)) {
+            const tagName = key.toUpperCase();
+            const config = customTagsConfig[key];
+            tags.push(tagName);
+            colors[tagName] = config.color || '#FFFFFF';
+            if (config.appliesToCalendar === true) {
+                calendarTags.push(tagName);
+            }
+        }
+    }
+    return { tags, calendarTags, colors };
+}
+// Konstanter för Daily Notes
 const DAILY_NOTES_FOLDER_NAME = "Daily-notes";
 const DAILY_NOTES_DISPLAY_NAME = "Daily Notes (Global)";
 function activate(context) {
@@ -75,13 +99,14 @@ function activate(context) {
         notesProvider.refresh();
     }));
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('quickNotes.notesFolder')) {
-            log("Setting 'notesFolder' changed. Updating...");
+        if (e.affectsConfiguration('quickNotes.notesFolder') ||
+            e.affectsConfiguration('quickNotes.customTags')) {
+            log("Settings changed. Updating...");
             notesProvider.refresh();
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newNote', async () => {
-        const notesFolder = await notesProvider.getNotesFolder(); // --- FIX --- (await)
+        const notesFolder = await notesProvider.getNotesFolder();
         if (!notesFolder) {
             return;
         }
@@ -106,7 +131,7 @@ function activate(context) {
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand('quickNotes.newTodo', async () => {
-        const notesFolder = await notesProvider.getNotesFolder(); // --- FIX --- (await)
+        const notesFolder = await notesProvider.getNotesFolder();
         if (!notesFolder) {
             return;
         }
@@ -156,7 +181,6 @@ class NotesViewProvider {
             localResourceRoots: [this._extensionUri]
         };
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
-        // --- FIX --- (Korrekt kommando för att uppdatera när panelen syns)
         webviewView.onDidChangeVisibility(() => {
             if (webviewView.visible) {
                 log("Panel became visible, updating.");
@@ -198,8 +222,13 @@ class NotesViewProvider {
     }
     async sendNotesToWebview() {
         if (this._view) {
-            const notesData = await this.getNotes(await this.getNotesFolder(), await this.getDailyNotesFolder());
-            this._view.webview.postMessage({ type: 'notesUpdate', notesData: notesData });
+            const notesData = await this.getNotes(await this.getNotesFolder(), this.getDailyNotesFolder());
+            const tagsAndColors = getCustomTagsAndColors();
+            this._view.webview.postMessage({
+                type: 'notesUpdate',
+                notesData: notesData,
+                tagColors: tagsAndColors.colors
+            });
         }
     }
     async sendFoldersToWebview() {
@@ -213,7 +242,6 @@ class NotesViewProvider {
             return [];
         }
         try {
-            // Kontrollera om mappen finns FÖRST
             await fsPromises.access(notesFolder);
             const items = await fsPromises.readdir(notesFolder);
             const folders = [];
@@ -270,9 +298,7 @@ class NotesViewProvider {
             }
             else {
                 const folderPath = path.join(notesFolder, folderName);
-                if (!fs.existsSync(folderPath)) {
-                    await fsPromises.mkdir(folderPath, { recursive: true });
-                }
+                await fsPromises.mkdir(folderPath, { recursive: true });
                 const newPath = path.join(folderPath, fileName);
                 if (filePath !== newPath) {
                     await fsPromises.rename(filePath, newPath);
@@ -296,12 +322,18 @@ class NotesViewProvider {
                 vscode.window.showErrorMessage('Cannot create folder: no notes folder found.');
                 return;
             }
-            if (!fs.existsSync(notesFolder)) {
-                await fsPromises.mkdir(notesFolder, { recursive: true });
-            }
+            await fsPromises.mkdir(notesFolder, { recursive: true });
             const folderPath = path.join(notesFolder, folderName);
-            if (!fs.existsSync(folderPath)) {
+            let folderExists = true;
+            try {
+                await fsPromises.access(folderPath);
+            }
+            catch {
+                folderExists = false;
+            }
+            if (!folderExists) {
                 await fsPromises.mkdir(folderPath, { recursive: true });
+                vscode.window.showInformationMessage(`Folder '${folderName}' created successfully.`);
             }
             else {
                 vscode.window.showWarningMessage('Folder already exists!');
@@ -319,8 +351,9 @@ class NotesViewProvider {
             root: []
         };
         const allDeadlines = new Set();
-        if (dailyNotesPath && fs.existsSync(dailyNotesPath)) {
-            const dailyNotes = await this.readNotesFromFolder(dailyNotesPath, allDeadlines);
+        const { calendarTags } = getCustomTagsAndColors();
+        if (dailyNotesPath) {
+            const dailyNotes = await this.readNotesFromFolder(dailyNotesPath, allDeadlines, [], calendarTags);
             if (dailyNotes.root.length > 0 || Object.keys(dailyNotes.folders).length > 0) {
                 let allDailyNotes = [...dailyNotes.root];
                 Object.values(dailyNotes.folders).forEach(folderContent => {
@@ -329,28 +362,31 @@ class NotesViewProvider {
                 result.folders[DAILY_NOTES_DISPLAY_NAME] = allDailyNotes;
             }
         }
-        if (projectNotesPath && fs.existsSync(projectNotesPath)) {
-            if (dailyNotesPath && projectNotesPath === path.dirname(dailyNotesPath)) {
-                const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines, [DAILY_NOTES_FOLDER_NAME]);
-                result.pinned.push(...projectNotes.pinned);
-                result.root.push(...projectNotes.root);
-                for (const folderName in projectNotes.folders) {
-                    result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+        if (projectNotesPath) {
+            const projectExists = await fsPromises.access(projectNotesPath).then(() => true).catch(() => false);
+            if (projectExists) {
+                if (dailyNotesPath && projectNotesPath === path.dirname(dailyNotesPath)) {
+                    const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines, [DAILY_NOTES_FOLDER_NAME], calendarTags);
+                    result.pinned.push(...projectNotes.pinned);
+                    result.root.push(...projectNotes.root);
+                    for (const folderName in projectNotes.folders) {
+                        result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+                    }
                 }
-            }
-            else {
-                const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines);
-                result.pinned.push(...projectNotes.pinned);
-                result.root.push(...projectNotes.root);
-                for (const folderName in projectNotes.folders) {
-                    result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+                else {
+                    const projectNotes = await this.readNotesFromFolder(projectNotesPath, allDeadlines, [], calendarTags);
+                    result.pinned.push(...projectNotes.pinned);
+                    result.root.push(...projectNotes.root);
+                    for (const folderName in projectNotes.folders) {
+                        result.folders[folderName] = (result.folders[folderName] || []).concat(projectNotes.folders[folderName]);
+                    }
                 }
             }
         }
         log('Sending deadlines to WebView:', Array.from(allDeadlines));
         return { ...result, deadlines: Array.from(allDeadlines) };
     }
-    async readNotesFromFolder(notesFolder, allDeadlines, excludeFolders = []) {
+    async readNotesFromFolder(notesFolder, allDeadlines, excludeFolders = [], calendarTags = []) {
         const result = {
             pinned: [],
             folders: {},
@@ -393,7 +429,7 @@ class NotesViewProvider {
         rootFilesWithStats.sort((a, b) => b.mtime - a.mtime);
         for (const { file } of rootFilesWithStats) {
             try {
-                const noteData = await this.getNoteData(notesFolder, file);
+                const noteData = await this.getNoteData(notesFolder, file, calendarTags);
                 noteData.deadlines.forEach((d) => allDeadlines.add(d));
                 const metadata = this.getMetadata(noteData.filePath);
                 if (metadata.pinned) {
@@ -431,7 +467,7 @@ class NotesViewProvider {
             const folderNotes = [];
             for (const file of folderFiles) {
                 try {
-                    const noteData = await this.getNoteData(folderPath, file);
+                    const noteData = await this.getNoteData(folderPath, file, calendarTags);
                     noteData.deadlines.forEach((d) => allDeadlines.add(d));
                     const metadata = this.getMetadata(noteData.filePath);
                     folderNotes.push({ ...noteData, folder: folder, pinned: metadata.pinned || false });
@@ -444,25 +480,39 @@ class NotesViewProvider {
         }
         return result;
     }
-    async getNoteData(folderPath, file) {
+    async getNoteData(folderPath, file, calendarTags = []) {
         const filePath = path.join(folderPath, file);
         const content = await fsPromises.readFile(filePath, 'utf-8');
         const isTodoList = content.includes('- [ ]') || content.includes('- [x]');
         const fileName = path.basename(file, '.md');
         const todos = isTodoList ? await this.getTodoItems(filePath) : [];
-        const deadlineRegex = /#DEADLINE\s*\(\s*(\d{4}-\d{2}-\d{2})\s*\)/gi;
+        const tagsConfig = getCustomTagsAndColors();
+        const allTags = tagsConfig.tags;
+        const tagRegex = new RegExp(`#(${allTags.join('|')})\\b`, 'gi');
+        const calendarTagRegex = new RegExp(`#(${calendarTags.join('|')})\\s*\\(\\s*(\\d{4}-\\d{2}-\\d{2})\\s*\\)`, 'gi');
+        const foundTags = [];
         const deadlines = [];
-        let match;
-        while ((match = deadlineRegex.exec(content)) !== null) {
-            log(`Found deadline: ${match[1]} in file ${file}`);
-            deadlines.push(match[1]);
+        let tagMatch;
+        while ((tagMatch = tagRegex.exec(content)) !== null) {
+            const tag = tagMatch[1].toUpperCase();
+            if (!foundTags.some(t => t.tag === tag)) {
+                foundTags.push({
+                    tag: tag,
+                    color: tagsConfig.colors[tag] || '#FFFFFF'
+                });
+            }
+        }
+        let deadlineMatch;
+        while ((deadlineMatch = calendarTagRegex.exec(content)) !== null) {
+            deadlines.push(deadlineMatch[2]);
         }
         return {
             title: fileName,
             filePath: filePath,
             isTodoList: isTodoList,
             todos: todos,
-            deadlines: deadlines
+            deadlines: deadlines,
+            activeTags: foundTags
         };
     }
     async getTodoItems(filePath) {
@@ -546,7 +596,6 @@ class NotesViewProvider {
                 vscode.window.showErrorMessage('Cannot create note: no notes folder is configured.');
                 return;
             }
-            // Måste inte 'awaita' denna, men det skadar inte
             await fsPromises.mkdir(notesFolder, { recursive: true });
             const targetFolder = folderName ? path.join(notesFolder, folderName) : notesFolder;
             if (folderName) {
@@ -554,7 +603,6 @@ class NotesViewProvider {
             }
             const fileName = `${title}.md`;
             const filePath = path.join(targetFolder, fileName);
-            // Använd 'access' för att kolla om filen finns (async)
             let fileExists = true;
             try {
                 await fsPromises.access(filePath);
@@ -593,7 +641,7 @@ class NotesViewProvider {
             const date = new Date(dateString);
             const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
             const title = `Note ${localDate.toISOString().split('T')[0]}`;
-            const dailyNotesFolder = this.getDailyNotesFolder(); // Denna är sync
+            const dailyNotesFolder = this.getDailyNotesFolder();
             const filePath = path.join(dailyNotesFolder, `${title}.md`);
             let fileExists = true;
             try {
@@ -658,7 +706,6 @@ class NotesViewProvider {
         }
     }
     _getHtmlForWebview(webview) {
-        // --- NY/ÄNDRAD --- (Lade till 'collapseState' och bytte engelska i JS)
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
@@ -765,6 +812,7 @@ class NotesViewProvider {
                     display: flex;
                     justify-content: space-between;
                     align-items: center;
+                    gap: 6px;
                 }
                 
                 .note-title {
@@ -773,6 +821,22 @@ class NotesViewProvider {
                     align-items: center;
                     gap: 6px;
                     flex: 1;
+                }
+                
+                .note-tags {
+                    display: flex;
+                    gap: 4px;
+                    flex-wrap: wrap;
+                }
+                
+                .note-tag {
+                    font-size: 10px;
+                    font-weight: bold;
+                    padding: 1px 4px;
+                    border-radius: 3px;
+                    background-color: var(--vscode-editorGroupHeader-tabsBackground);
+                    color: var(--vscode-editor-foreground);
+                    opacity: 0.8;
                 }
                 
                 .note-actions {
@@ -1061,10 +1125,9 @@ class NotesViewProvider {
                     let contextMenuTarget = null;
                     let availableFolders = [];
                     
-                    // --- NY/ÄNDRAD --- (Minnet för att spara mapp-lägen)
                     let collapseState = {};
+                    let currentTagColors = {}; 
 
-                    // Request initial notes
                     vscode.postMessage({ type: 'requestNotes' });
                     vscode.postMessage({ type: 'getFolders' });
 
@@ -1074,6 +1137,7 @@ class NotesViewProvider {
                             const notesData = message.notesData; 
                             currentNotes = notesData; 
                             deadlineDates = notesData.deadlines || []; 
+                            currentTagColors = message.tagColors || {};
                             
                             renderNotes();
                             renderCalendar();
@@ -1081,6 +1145,22 @@ class NotesViewProvider {
                             availableFolders = message.folders;
                         }
                     });
+
+                    function isColorDark(hexColor) {
+                        if (!hexColor) return false;
+                        hexColor = hexColor.replace('#', '');
+                        if (hexColor.length === 3) {
+                            hexColor = hexColor.split('').map(char => char + char).join('');
+                        }
+                        if (hexColor.length === 8) {
+                            hexColor = hexColor.substring(0, 6);
+                        }
+                        const r = parseInt(hexColor.substring(0, 2), 16);
+                        const g = parseInt(hexColor.substring(2, 4), 16);
+                        const b = parseInt(hexColor.substring(4, 6), 16);
+                        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+                        return brightness < 150;
+                    };
 
                     function renderNotes() {
                         const container = document.getElementById('notes-container');
@@ -1142,18 +1222,16 @@ class NotesViewProvider {
                                 const folderContents = document.createElement('div');
                                 folderContents.className = 'folder-contents';
                                 
-                                // --- NY/ÄNDRAD --- (Läser från minnet)
                                 if (collapseState[folderName] === 'collapsed') {
                                     arrow.classList.add('collapsed');
                                     folderContents.classList.add('collapsed');
                                 }
 
                                 currentNotes.folders[folderName].forEach(note => {
-                                    folderContents.appendChild(createNoteElement(note, note.pinned));
+                                    container.appendChild(createNoteElement(note, note.pinned));
                                 });
 
                                 folderHeaderDiv.onclick = () => {
-                                    // --- NY/ÄNDRAD --- (Spara till minnet)
                                     const isCollapsed = arrow.classList.toggle('collapsed');
                                     folderContents.classList.toggle('collapsed');
                                     collapseState[folderName] = isCollapsed ? 'collapsed' : 'expanded';
@@ -1221,6 +1299,22 @@ class NotesViewProvider {
                                 });
                             }
                         };
+                        
+                        const tagContainer = document.createElement('div');
+                        tagContainer.className = 'note-tags';
+                        
+                        if (note.activeTags && note.activeTags.length > 0) {
+                            note.activeTags.forEach(tagInfo => {
+                                const tagSpan = document.createElement('span');
+                                tagSpan.className = 'note-tag';
+                                tagSpan.textContent = \`#\${tagInfo.tag}\`;
+                                tagSpan.style.backgroundColor = tagInfo.color;
+                                if (isColorDark(tagInfo.color)) {
+                                    tagSpan.style.color = '#FFFFFF'; 
+                                }
+                                tagContainer.appendChild(tagSpan);
+                            });
+                        }
 
                         noteDiv.oncontextmenu = (e) => {
                             e.preventDefault();
@@ -1258,6 +1352,7 @@ class NotesViewProvider {
                         actionsDiv.appendChild(deleteBtn);
                         
                         headerDiv.appendChild(titleDiv);
+                        headerDiv.appendChild(tagContainer);
                         headerDiv.appendChild(actionsDiv);
                         noteDiv.appendChild(headerDiv);
                         
@@ -1324,34 +1419,47 @@ class NotesViewProvider {
                         
                         const moveToRootItem = document.createElement('div');
                         moveToRootItem.className = 'context-menu-item';
-                        moveToRootItem.textContent = '📂 Move to Root';
-                        moveToRootItem.onclick = () => {
-                            vscode.postMessage({
-                                type: 'moveToFolder',
-                                filePath: note.filePath,
-                                folderName: ''
-                            });
-                            hideContextMenu();
-                        };
-                        menu.appendChild(moveToRootItem);
-                        
-                        if (availableFolders.length > 0) {
-                            availableFolders.forEach(folder => {
-                                const folderItem = document.createElement('div');
-                                folderItem.className = 'context-menu-item';
-                                folderItem.textContent = '📁 Move to ' + folder;
-                                folderItem.onclick = () => {
+                            if (note.folder) {
+                                moveToRootItem.textContent = '📂 Move to Root';
+                                moveToRootItem.onclick = () => {
                                     vscode.postMessage({
                                         type: 'moveToFolder',
                                         filePath: note.filePath,
-                                        folderName: folder
+                                        folderName: ''
                                     });
                                     hideContextMenu();
                                 };
-                                menu.appendChild(folderItem);
-                            });
-                        }
-                        
+                                menu.appendChild(moveToRootItem);
+                            } else {
+                            }
+                            
+                            if (availableFolders.length > 0) {
+                                const moveHeader = document.createElement('div');
+                                moveHeader.className = 'context-menu-item';
+                                moveHeader.textContent = '— Move to Folder —';
+                                moveHeader.style.fontWeight = 'bold';
+                                moveHeader.style.opacity = '0.7';
+                                menu.appendChild(moveHeader);
+
+                                availableFolders.forEach(folder => {
+                                    if (folder !== note.folder) {
+                                        const folderItem = document.createElement('div');
+                                        folderItem.className = 'context-menu-item';
+                                        folderItem.textContent = '📁 ' + folder;
+                                        folderItem.onclick = () => {
+                                            vscode.postMessage({
+                                                type: 'moveToFolder',
+                                                filePath: note.filePath,
+                                                folderName: folder
+                                            });
+                                            hideContextMenu();
+                                        };
+                                        menu.appendChild(folderItem);
+                                    }
+                                });
+                            }
+
+
                         menu.style.display = 'block';
                         menu.style.left = event.pageX + 'px';
                         menu.style.top = event.pageY + 'px';
@@ -1472,7 +1580,7 @@ class NotesViewProvider {
                     };
                     
                     renderCalendar();
-                }()); // --- NY/ÄNDRAD --- (Avslutar IIFE)
+                }());
             </script>
         </body>
         </html>`;
