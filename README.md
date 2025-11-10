@@ -6,6 +6,7 @@ Detta projekt är byggt för att separera dina globala anteckningar (som alltid 
 
 
 ![Screenshot](https://i.imgur.com/P1umgSD.jpeg)
+(Har fäst den på höger sida i VS Code)
 
 
 ## Funktioner
